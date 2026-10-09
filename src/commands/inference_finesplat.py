@@ -1,19 +1,19 @@
-"""Evaluate the PTv3 token refiner on the DL3DV benchmark protocol.
+"""Evaluate FineSplat (Stage 1 + Stage 2) on the DL3DV benchmark protocol.
 
 Same 140-scene protocol, metrics and outputs as ``src.commands.inference``, so the
 numbers drop straight into the same table. Per scene:
 
-    frozen 2Xplat -> tokens -> context render -> error map -> lifted error
-      -> PTv3 refiner -> token residual -> refined Gaussians
+    Stage 1 -> tokens -> [context render -> error map -> lifted error
+      -> Stage 2 -> token residual -> Gaussians] x num_steps
       -> render target views, or EPA          (inference.pose_optimization)
       -> metrics / renderings
 
-``inference.refiner.ckpt_path: ""`` leaves the head zero-initialised, so the run
-reproduces frozen 2Xplat through the refiner's own fp32 decode path. That is the control
+``inference.checkpoint.ckpt_path: ""`` leaves the Stage-2 head zero-initialised, so the
+run reproduces Stage 1 alone through Stage 2's own fp32 decode path. That is the control
 this evaluation should be read against - not the bf16 numbers from ``inference.py``, which
 decode the Gaussians in a different precision.
 
-    python -m src.commands.inference_refiner --config src/configs/refiner/eval/6v_GTpose_refiner.yaml
+    python -m src.commands.inference_finesplat --config src/configs/finesplat/eval/dl3dv_6v_posed.yaml
 """
 
 import os
@@ -23,8 +23,7 @@ import torch
 from easydict import EasyDict as edict
 
 from src.commands.inference import AMP_DTYPE, build_dataloader, load_model
-from src.commands.train_refiner import _deep_merge
-from src.model.ptv3_refiner import TwoXplatPTv3Refiner, default_conf
+from src.utils.checkpoints import checkpoint_state
 from src.utils.init_utils import init_config
 from src.utils.eval_paths import resolve_out_dir
 from src.utils.metric_utils import export_results, summarize_evaluation
@@ -32,32 +31,30 @@ from src.utils.metric_utils import export_results, summarize_evaluation
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 
-def load_refiner(config, base, device):
-    """Build the refiner named by ``refiner_model.arch`` and load its checkpoint, if any."""
-    from src.commands.train_refiner import build_refiner
+def load_finesplat(config, base, device):
+    """Build FineSplat on top of ``base`` and load ``inference.checkpoint``, if any."""
+    from src.commands.train_finesplat import build_finesplat
 
-    model, _ = build_refiner(base, config)
+    model, _ = build_finesplat(base, config)
     model = model.to(device)
-    ckpt_path = config.inference.get("refiner", {}).get("ckpt_path", "")
+    cconf = config.inference.get("checkpoint", {}) or {}
+    ckpt_path = cconf.get("ckpt_path", "")
     if not ckpt_path:
-        print("No refiner checkpoint: the zero-init head makes this the frozen-2Xplat control.")
+        print("No Stage-2 checkpoint: the zero-init head makes this the Stage-1-only control.")
     else:
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        rconf = config.inference.get("refiner", {})
-        # use_ema: read the EMA weights an e2e checkpoint carries. full_state: keep the
-        # model.* keys too (e2e trains the base, so the checkpoint's base must win over
-        # inference.ckpt_path). Both default off: frozen-refiner checkpoints as before.
-        state = ckpt.get("ema") if rconf.get("use_ema", False) else None
-        if state is None:
-            state = ckpt.get("refiner", ckpt)
-        if not rconf.get("full_state", False):
-            # The frozen base is saved alongside the refiner; it is already loaded.
+        # use_ema: the EMA weights an end-to-end checkpoint carries. full_state: keep the
+        # model.* keys too (end-to-end training updates Stage 1, so the checkpoint's Stage 1
+        # must win over inference.ckpt_path). Both default off: Stage-2-only checkpoints.
+        state = checkpoint_state(ckpt, cconf.get("use_ema", False))
+        if not cconf.get("full_state", False):
+            # Stage 1 is saved alongside Stage 2; it is already loaded.
             state = {k: v for k, v in state.items() if not k.startswith("model.")}
         missing, unexpected = model.load_state_dict(state, strict=False)
         trained = [k for k in missing if not k.startswith("model.")]
-        assert not trained, f"refiner weights missing from checkpoint: {trained[:5]}"
+        assert not trained, f"Stage-2 weights missing from checkpoint: {trained[:5]}"
         assert not unexpected, f"unexpected keys in checkpoint: {unexpected[:5]}"
-        print(f"Loaded refiner from {ckpt_path} (step {ckpt.get('step', '?')})")
+        print(f"Loaded FineSplat from {ckpt_path} (step {ckpt.get('step', '?')})")
     model.eval()
     return model
 
@@ -80,7 +77,7 @@ def main() -> None:
     dataloader = build_dataloader(config)
     base = load_model(config, device)
     base.eval()
-    model = load_refiner(config, base, device)
+    model = load_finesplat(config, base, device)
 
     visualize_first_n = config.inference.get("visualize_first_n", 0)
     num_input = config.data.num_input_frames

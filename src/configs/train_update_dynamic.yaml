@@ -33,7 +33,9 @@ model:
   mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
 
 data:
-  data_path: src/data/dl3dv_train.txt
+  root: /scratch/y5ryan/datasets/dl3dv_480
+  split: train
+  scene_list: src/data/DL3DV/train_scenes.txt
   input_frame_select_type: uniform
   target_frame_select_type: random
   target_has_input: true

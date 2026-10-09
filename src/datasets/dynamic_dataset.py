@@ -3,6 +3,7 @@ import json
 import torch
 import numpy as np
 
+from src.datasets.scene_lists import resolve_scene_paths
 from src.datasets.base_dataset import BaseDataset
 from src.utils.dataset_utils import (
     _load_frame_image_and_intrinsics,
@@ -65,27 +66,13 @@ class DynamicInputDataset(BaseDataset):
         super().__init__(config)
         self.config = config
         self.evaluation = config.get("evaluation", False)
-        self.data_path = self._load_scene_paths(config.data.data_path)
+        self.data_path = resolve_scene_paths(config.data)
         self._scene_len()
 
     def _scene_len(self):
         """Set num_of_scenes from the loaded data_path list."""
         self.num_of_scenes = len(self.data_path)
 
-    @staticmethod
-    def _load_scene_paths(data_list_file: str) -> list[str]:
-        """Resolve scene JSON paths; relative paths are anchored to the list file's directory.
-
-        Args:
-            data_list_file: Path to a text file listing scene JSON paths, one per line.
-
-        Returns:
-            A list of absolute paths to scene JSON files.
-        """
-        data_folder = data_list_file.rsplit('/', 1)[0]
-        with open(data_list_file, 'r') as f:
-            paths = [line.strip() for line in f if line.strip()]
-        return [p if p.startswith("/") else os.path.join(data_folder, p) for p in paths]
 
     def process_frames(
         self,

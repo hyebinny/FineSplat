@@ -6,7 +6,7 @@ made local, `MODELS`/`MODULES`/`gin` decorators dropped, and `torch_scatter.segm
 swapped for a `torch.segment_reduce` shim (torch_scatter_compat.py) - installing upstream
 Pointcept instead would pull in pointops/ocnn/torch_geometric for backbones we never run.
 
-The refiners use only `Block`/`SerializedAttention` (from .ptv3) and `Point`
+Stage 2 uses only `Block`/`SerializedAttention` (from .ptv3) and `Point`
 (from .structure); the full `PointTransformerV3` U-Net is kept as reference.
 """
 

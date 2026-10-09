@@ -1,14 +1,13 @@
-"""Train the error-conditioned PTv3 token refiner on top of frozen 2Xplat.
+"""Train FineSplat: Stage 2 on a frozen Stage 1, or the whole model end-to-end.
 
-2Xplat and the ResNet-18 error backbone stay frozen; only ErrorMapEncoder's projections,
-ErrorLifter and FlatPTv3Refiner are optimized, against a photometric loss on the held-out
-target views. The refiner head is zero-initialised, so step 0 reproduces the frozen model
-exactly - the first logged loss is the baseline.
+Default (``stage2.e2e: false``): Stage 1 (2Xplat) and the ResNet-18 error backbone stay
+frozen; only ErrorMapEncoder's projections, ErrorLifter and the Stage-2 network are
+optimized, against a photometric loss on the held-out target views. The Stage-2 head is
+zero-initialised, so step 0 reproduces Stage 1 exactly - the first logged loss is the
+baseline. With ``stage2.e2e: true`` Stage 1 is unfrozen and trained jointly.
 
-Recipe follows ZipSplat's `configs/zipsplat_ptv3_refiner.yaml` (AdamW 1e-4, 2k warm-up,
-grad-norm clip 0.5, L1 + 0.05 LPIPS on the targets).
-
-    torchrun --nproc_per_node 4 -m src.commands.train_refiner --config src/configs/refiner/train/token_lr1e-4.yaml
+    torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/finesplat/train/stage2_224.yaml
+    torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/finesplat/train/e2e_224.yaml
 """
 
 import os
@@ -23,10 +22,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
 from src.commands.inference import AMP_DTYPE, load_model
+from src.utils.checkpoints import checkpoint_state
 from src.commands.train import build_input_target_dicts, set_epoch
 from src.datasets import get_train_data_loader
 from src.model.loss import PerceptualLoss
-from src.model.ptv3_refiner import TwoXplatPTv3Refiner, default_conf
+from src.model.stage2 import FineSplat, default_conf
 from src.utils import watchlist
 from src.utils.eval_paths import train_out_dir, wandb_dir
 from src.utils.init_utils import init_config
@@ -45,14 +45,14 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
-def build_refiner(base, config):
-    """Instantiate the refiner named by ``refiner_model.arch``, merged onto its own defaults.
+def build_finesplat(base, config):
+    """Instantiate the model named by ``stage2.arch``, merged onto its own defaults.
 
-    "ptv3" is the serialized-attention refiner in src.model.ptv3_refiner; "resplat" is the
-    recurrent kNN-attention port in src.model.resplat_refiner. They take different config
-    trees, so each merges against its own module-level defaults.
+    "ptv3" is FineSplat's Stage 2 in src.model.stage2; "resplat" is the recurrent
+    kNN-attention port in src.model.resplat_refiner (not shipped). They take different
+    config trees, so each merges against its own module-level defaults.
     """
-    raw = config.get("refiner_model", {})
+    raw = config.get("stage2", {})
     # init_config() hands back edicts, but callers that pass OmegaConf straight through would
     # otherwise reach _deep_merge as DictConfig, which fails isinstance(dict) and silently
     # replaces a whole defaults subtree instead of merging into it.
@@ -62,13 +62,13 @@ def build_refiner(base, config):
     arch = conf.pop("arch", "ptv3")
     if arch == "ptv3":
         merged = _deep_merge(default_conf, conf)
-        return TwoXplatPTv3Refiner(base, merged), merged
+        return FineSplat(base, merged), merged
     if arch == "resplat":
         from src.model.resplat_refiner import ReSplatRefiner, default_conf as resplat_conf
 
         merged = _deep_merge(resplat_conf, conf)
         return ReSplatRefiner(base, merged), merged
-    raise ValueError(f"unknown refiner_model.arch: {arch!r} (expected 'ptv3' or 'resplat')")
+    raise ValueError(f"unknown stage2.arch: {arch!r} (expected 'ptv3' or 'resplat')")
 
 
 def init_wandb(config, resume_id: str | None = None):
@@ -115,7 +115,7 @@ def _panel_font():
 
 
 def log_images(wandb, out, target_data, core, step: int, max_views: int | None = None) -> None:
-    """Log GT | frozen 2Xplat | refined for the current batch's first scene, each tile
+    """Log GT | Stage 1 | Stage 2 for the current batch's first scene, each tile
     labelled with its (psnr, ssim, lpips) against the GT view above it.
 
     Defaults to every target view, i.e. exactly the views the loss is computed on.
@@ -129,7 +129,7 @@ def log_images(wandb, out, target_data, core, step: int, max_views: int | None =
     ref = out["render"][0, :v].detach().float().clamp(0, 1)
 
     scores = {}
-    for name, pred in (("frozen", base), ("refined", ref)):
+    for name, pred in (("stage1", base), ("stage2", ref)):
         psnr = compute_psnr(gt, pred).reshape(-1).tolist()
         ssim = compute_ssim(gt, pred).reshape(-1).tolist()
         lpips = compute_lpips(gt, pred).reshape(-1).tolist()
@@ -150,7 +150,7 @@ def log_images(wandb, out, target_data, core, step: int, max_views: int | None =
 
     for row in range(v):
         y = _PANEL_PAD + row * (cell_h + _PANEL_PAD)
-        for col, (name, img) in enumerate((("GT", gt), ("frozen", base), ("refined", ref))):
+        for col, (name, img) in enumerate((("GT", gt), ("stage1", base), ("stage2", ref))):
             x = _PANEL_PAD + col * (w + _PANEL_PAD)
             label = name if name == "GT" else (
                 f"{name} ({scores[name][row][0]:5.2f}, "
@@ -159,12 +159,12 @@ def log_images(wandb, out, target_data, core, step: int, max_views: int | None =
             draw.text((x, y + 2), label, fill=(0, 0, 0), font=font)
             canvas.paste(to_pil(img[row]), (x, y + _PANEL_LABEL))
 
-    wandb.log({"targets/gt|frozen|refined": wandb.Image(canvas, caption="(psnr, ssim, lpips) vs GT")},
+    wandb.log({"targets/gt|stage1|stage2": wandb.Image(canvas, caption="(psnr, ssim, lpips) vs GT")},
               step=step)
 
 
-def refiner_state_dict(core) -> dict:
-    """Trainable weights only. The frozen 2Xplat lives under `model.` and would otherwise
+def stage2_state_dict(core) -> dict:
+    """Trainable weights only. The frozen Stage 1 lives under `model.` and would otherwise
     turn every checkpoint into a 5.7 GB copy of a checkpoint we already have on disk."""
     return {k: v for k, v in core.state_dict().items() if not k.startswith("model.")}
 
@@ -186,7 +186,7 @@ def lr_at(step: int, base_lr: float, warmup: float, total: int,
 
     ``warmup`` is a step count, or a fraction of ``total`` when below 1 - ReSplat expresses
     the same thing as ``warm_up_ratio: 0.01`` on its OneCycleLR. 2Xplat itself warms up over
-    0 steps, but it is fine-tuning a trained model at lr 2e-5, while this refiner starts
+    0 steps, but it is fine-tuning a trained model at lr 2e-5, while Stage 2 starts
     from a zero-initialised head at a much larger lr and takes a visible hit on its first
     update without one.
 
@@ -231,7 +231,7 @@ def main() -> None:
 
     base = load_model(config, device)
     base.eval()
-    model, refiner_conf = build_refiner(base, config)
+    model, stage2_conf = build_finesplat(base, config)
     model = model.to(device)
     if world > 1:
         # e2e unfreezes the whole base; DA3 keeps a few heads that never see the loss, so
@@ -244,7 +244,7 @@ def main() -> None:
 
     # e2e needs real train mode: the DA3 grad-checkpoint gate and the single-joint-pass
     # branch both read module.training. Frozen runs keep everything in eval as before
-    # (the refiner's own modules have no dropout/BN, so train mode never mattered there).
+    # (Stage 2's own modules have no dropout/BN, so train mode never mattered there).
     if core.e2e:
         core.train()
 
@@ -267,7 +267,9 @@ def main() -> None:
     resume = config.train.get("resume", False)
     resume_path = None
     if resume:
-        resume_path = os.path.join(out_dir, "refiner_last.pt") if resume is True else str(resume)
+        resume_path = os.path.join(out_dir, "finesplat_last.pt") if resume is True else str(resume)
+        if resume is True and not os.path.exists(resume_path):
+            resume_path = os.path.join(out_dir, "refiner_last.pt")  # runs written before the rename
         if not os.path.exists(resume_path):
             resume_path = None
     prev_ckpt = (torch.load(resume_path, map_location="cpu", weights_only=False)
@@ -283,11 +285,11 @@ def main() -> None:
         core, config.train.get("weight_decay", 0.05), config.train.lr,
         (config.train.get("beta1", 0.9), config.train.get("beta2", 0.95)),
     )
-    # train.refiner_lr: a separate peak lr for everything outside the base (core.model),
-    # e.g. a from-scratch refiner trained jointly with a fine-tuned base. Every group
+    # train.stage2_lr: a separate peak lr for everything outside the base (core.model),
+    # e.g. a from-scratch Stage 2 trained jointly with a fine-tuned Stage 1. Every group
     # follows the same schedule, scaled to its own peak_lr.
-    refiner_lr = config.train.get("refiner_lr", None)
-    if refiner_lr is not None:
+    stage2_lr = config.train.get("stage2_lr", None)
+    if stage2_lr is not None:
         ref_ids = {id(p) for n, p in core.named_parameters() if not n.startswith("model.")}
         groups = []
         for g in opt.param_groups:
@@ -295,11 +297,11 @@ def main() -> None:
                 ps = [p for p in g["params"] if (id(p) in ref_ids) == is_ref]
                 if ps:
                     groups.append({"params": ps, "weight_decay": g["weight_decay"],
-                                   "peak_lr": refiner_lr if is_ref else config.train.lr})
+                                   "peak_lr": stage2_lr if is_ref else config.train.lr})
         opt = torch.optim.AdamW(groups, lr=config.train.lr, betas=opt.defaults["betas"])
         if is_main:
             n_ref = sum(p.numel() for p in params if id(p) in ref_ids)
-            print(f"refiner_lr {refiner_lr} on {n_ref / 1e6:.2f}M params, base lr {config.train.lr} "
+            print(f"stage2_lr {stage2_lr} on {n_ref / 1e6:.2f}M params, base lr {config.train.lr} "
                   f"on the rest", flush=True)
 
     # The eval dataset reads fixed context/target indices from the benchmark json, which
@@ -308,7 +310,7 @@ def main() -> None:
     loader = get_train_data_loader(config, num_workers=config.train.get("num_workers", 4))
 
     # 2Xplat's own recipe (src/model/loss.py, configs/train_stage*.yaml): 1.0 * MSE +
-    # 0.2 * Chen-Koltun VGG19 perceptual, LPIPS off. The refiner follows it so that the
+    # 0.2 * Chen-Koltun VGG19 perceptual, LPIPS off. Stage 2 follows it so that the
     # residual is trained against the same objective the frozen base was. lpips_weight > 0
     # adds LPIPS(VGG) on top; photometric: "l1" restores ZipSplat's original term.
     photometric = config.train.get("photometric", "mse")
@@ -318,9 +320,9 @@ def main() -> None:
     # Which views the loss reads, train.loss_views: {target: N, context: M}. target says
     # how many of the batch's target views enter each step (absent = all of them); context
     # says how many context views are sampled in alongside (0 = none, the default). The
-    # refiner reads its context rendering error but is scored on held-out views, so nothing
+    # Stage 2 reads its context rendering error but is scored on held-out views, so nothing
     # in the target-only objective says to close that error - test-time optimisation closes
-    # it and gains +1.76 PSNR held-out against the refiner's +0.75, which says the signal
+    # it and gains +1.76 PSNR held-out against Stage 2's +0.75, which says the signal
     # transfers. Both sets are pooled into one photometric + perceptual term, so their
     # relative weight is exactly their view-count ratio.
     # context also takes a list aligned with training.num_views - [3, 3, 3, 1] against
@@ -360,7 +362,7 @@ def main() -> None:
     epoch_now, batch_in_epoch = [0], [0]
 
     def run_watchlist(step: int) -> dict:
-        """Evaluate the watchlist, log it, and refresh refiner_last/refiner_best."""
+        """Evaluate the watchlist, log it, and refresh finesplat_last/finesplat_best."""
         nonlocal best_psnr
         # The pose mix flips the base's camera mode per training step; the watchlist always
         # measures under the config's own mode.
@@ -375,52 +377,52 @@ def main() -> None:
             wandb.log(wl, step=step)
         # Everything needed to continue: the moments matter as much as the weights, and
         # the epoch plus the batch index inside it put the sampler back where it was.
-        # e2e checkpoints must carry the (no longer frozen) base as well, so they store the
-        # full state dict; frozen runs keep the small refiner-only dict as before.
-        state = core.state_dict() if core.e2e else refiner_state_dict(core)
+        # e2e checkpoints must carry the (no longer frozen) Stage 1 as well, so they store
+        # the full state dict; frozen runs keep the small Stage-2-only dict.
+        state = core.state_dict() if core.e2e else stage2_state_dict(core)
         ckpt = {"step": step, "epoch": epoch_now[0], "batch_in_epoch": batch_in_epoch[0],
-                "refiner": state, "optimizer": opt.state_dict(),
+                "state": state, "optimizer": opt.state_dict(),
                 "best_psnr": best_psnr, "wandb_id": wandb_id,
-                "watchlist": wl, "refiner_conf": refiner_conf}
+                "watchlist": wl, "stage2_conf": stage2_conf}
         if ema is not None:
             ckpt["ema"] = ema.state_dict()
-        torch.save(ckpt, os.path.join(out_dir, "refiner_last.pt"))
-        # refiner_last.pt is overwritten every time, so also keep one file per evaluation:
+        torch.save(ckpt, os.path.join(out_dir, "finesplat_last.pt"))
+        # finesplat_last.pt is overwritten every time, so also keep one file per evaluation:
         # a run can then be read back at any checkpointed step, not only at its end. These
         # are 170 MB each, so a 10k run at ckpt_every 1000 leaves 1.7 GB behind - prune by
         # hand once the run has been looked at.
         if config.train.get("keep_step_checkpoints", True):
-            torch.save(ckpt, os.path.join(out_dir, f"refiner_step_{step:06d}.pt"))
+            torch.save(ckpt, os.path.join(out_dir, f"finesplat_step_{step:06d}.pt"))
         # Selected on the train split so no test scene ever steers which weights are kept.
         # Averaged over the logged view counts rather than read off 6v alone.
         train_psnr = sum(v for k, v in wl.items()
                          if k.startswith("watchlist/train") and k.endswith("_psnr"))
         if train_psnr > best_psnr:
             best_psnr = train_psnr
-            torch.save(ckpt, os.path.join(out_dir, "refiner_best.pt"))
+            torch.save(ckpt, os.path.join(out_dir, "finesplat_best.pt"))
             print(f"  new best (watchlist train psnr sum {best_psnr:.4f})", flush=True)
         return wl
 
-    # train.init_refiner_ckpt: warm-start the refiner weights from a finished run (weights
+    # train.init_stage2_ckpt: warm-start the Stage-2 weights from a finished run (weights
     # only - step, optimizer moments and schedule start fresh). A resume checkpoint in
     # out_dir takes precedence, so an interrupted warm-started run still picks itself up.
-    init_ckpt = config.train.get("init_refiner_ckpt", None)
+    init_ckpt = config.train.get("init_stage2_ckpt", None)
     if init_ckpt and prev_ckpt is None:
         w = torch.load(str(init_ckpt), map_location="cpu", weights_only=False)
-        missing = core.load_state_dict(w["refiner"], strict=False).missing_keys
+        missing = core.load_state_dict(checkpoint_state(w), strict=False).missing_keys
         assert not [k for k in missing if not k.startswith("model.")], missing
         if is_main:
-            print(f"initialised refiner weights from {init_ckpt} (step {w.get('step')})", flush=True)
+            print(f"initialised Stage-2 weights from {init_ckpt} (step {w.get('step')})", flush=True)
 
-    # resume: true picks up out_dir/refiner_last.pt; a path resumes from that file.
+    # resume: true picks up out_dir/finesplat_last.pt; a path resumes from that file.
     start_step, start_epoch, skip_batches = 0, 0, 0
     if prev_ckpt is not None:
-        missing = core.load_state_dict(prev_ckpt["refiner"], strict=False).missing_keys
+        missing = core.load_state_dict(checkpoint_state(prev_ckpt), strict=False).missing_keys
         assert not [k for k in missing if not k.startswith("model.")], missing
         if "optimizer" in prev_ckpt:
             opt.load_state_dict(prev_ckpt["optimizer"])
         if ema is not None and "ema" in prev_ckpt:
-            ema.load_state_dict(prev_ckpt["ema"])
+            ema.load_state_dict(checkpoint_state(prev_ckpt, use_ema=True))
         start_step = prev_ckpt["step"]
         start_epoch = prev_ckpt.get("epoch", 0)
         skip_batches = prev_ckpt.get("batch_in_epoch", 0)
@@ -466,14 +468,14 @@ def main() -> None:
                 out = model(input_data, target_data)
             gt = target_data["image"].float()
             flat_g = gt.flatten(0, 1)
-            # Every refinement pass is supervised, not just the last: an auxiliary term per
-            # pass is what makes each one improve the state it receives, which is the whole
-            # point of iterating. Averaged so the loss scale does not depend on num_iters.
+            # Every Stage-2 step is supervised, not just the last: an auxiliary term per
+            # step is what makes each one improve the state it receives. Averaged so the
+            # loss scale does not depend on num_steps.
             renders = out["renders"]
             ctx_renders = out.get("context_renders") or []
             # The pool of views the loss reads: a sample of the targets (or all of them)
             # plus this step's sampled context views. The context renders come out of the
-            # model, one per pass, because only there is the render differentiable.
+            # model, one per step, because only there is the render differentiable.
             t_idx = None
             if loss_target_views and loss_target_views < gt.shape[1]:
                 t_idx = torch.randperm(gt.shape[1], device=gt.device)[:loss_target_views]
@@ -499,9 +501,9 @@ def main() -> None:
                 perc_sum = pci if perc_sum is None else perc_sum + pci
                 lp_sum = lpi if lp_sum is None else lp_sum + lpi
             n = len(renders)
-            # e2e: the unfrozen base's own prediction (iter 0) carries the same objective,
-            # so 2Xplat keeps being supervised directly and not only through the refiner
-            # passes. Targets only - there is no per-pass context render for iter 0.
+            # e2e: the unfrozen Stage 1's own prediction (step 0) carries the same objective,
+            # so Stage 1 keeps being supervised directly and not only through the Stage-2
+            # steps. Targets only - there is no per-step context render for step 0.
             r0 = out.get("render0")
             if r0 is not None:
                 r0l = r0.float().clamp(0, 1)
@@ -542,8 +544,8 @@ def main() -> None:
                       f"gnorm {float(grad_norm):.3f}  lr {opt.param_groups[0]['lr']:.2e}  "
                       f"{sec_per_step:.2f}s/step", flush=True)
                 if wandb is not None:
-                    # train/* are averaged over the refinement passes; pass/* breaks them out
-                    # so it is visible whether each pass actually improves on the one before.
+                    # train/* are averaged over the Stage-2 steps; pass/* breaks them out
+                    # so it is visible whether each step actually improves on the one before.
                     log = {
                         "train/loss": loss.detach().item(),
                         f"train/{photometric}": photo.detach().item(),

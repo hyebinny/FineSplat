@@ -28,8 +28,10 @@ model:
   da_model_weights_path: pretrained_weights/da3_giant.safetensors
   mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
 data:
-  data_path: src/data/dl3dv_test.txt
-  json_path: src/data/dl3dv_start_0_distance_100_ctx_12v_tgt_8v.json
+  root: /scratch/y5ryan/datasets/dl3dv_480
+  split: test
+  scene_list: src/data/DL3DV/test_scenes.txt
+  json_path: src/data/DL3DV/eval_ctx12_tgt8.json
   input_frame_select_type: json_context
   target_frame_select_type: json_target
   num_input_frames: 12
@@ -58,20 +60,20 @@ inference:
   compute_metrics: true
   visualize: false
   visualize_first_n: 3
-  refiner:
-    ckpt_path: pretrained_weights/finesplat/e2e_224_step10k_ema.pt
-    use_ema: true
-    full_state: true
   prune_mode: contribution
   prune_keep_per_view:
   - 10368
   epa_steps: 200
-  eval_iters:
+  checkpoint:
+    ckpt_path: pretrained_weights/finesplat/e2e_224_step10k_ema.pt
+    use_ema: true
+    full_state: true
+  eval_steps:
   - 0
   - 4
-refiner_model:
-  num_iters: 4
-  refiner:
+stage2:
+  num_steps: 4
+  network:
     patch_size: 8
   error:
     image_embed: mvp_s1

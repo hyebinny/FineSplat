@@ -200,7 +200,7 @@ class GeometryExpert:
         context-only gauge. During training a single joint pass is used.
         """
         if not self.inference_mode or self.pose_regressor.training:
-            # Training (including e2e refiner training, where the regressor is in train
+            # Training (including end-to-end FineSplat training, where the regressor is in train
             # mode): one joint pass over context + target, exactly as 2Xplat's own training.
             # The two-pass protocol below keeps eval context cameras independent of the
             # target images; at training it would only double DA3's memory and time.
@@ -648,7 +648,7 @@ class AppearanceExpert:
 
         Returns the raw, pre-activation parameters (B, N, 23) laid out as
         ``[depth 1 | image_offset 2 | feature C | scale 3 | rotation 4 | opacity O]``.
-        This is the representation ``src.model.ptv3_refiner`` refines in Gaussian mode:
+        This is the representation ``src.model.stage2`` corrects in Gaussian mode:
         a residual added here keeps every bound the activations impose - the offset stays
         inside its sub-cell, depth stays inside ``(0, max_dist)``, scale stays clamped.
         """
@@ -790,7 +790,7 @@ class TwoExpertModel(nn.Module):
         self.max_dist = config.model.gaussians.max_dist
         self.da_model_name = config.model.da_model_name
         # 0 disables gradient checkpointing in the DA3 backbone, N checkpoints every N-th
-        # block. Only read when a `training` section exists (e2e refiner training).
+        # block. Only read when a `training` section exists (end-to-end FineSplat training).
         self.grad_ckpt_every = (
             config.training.get("grad_checkpoint_every", 0) if hasattr(config, "training") else 0
         )

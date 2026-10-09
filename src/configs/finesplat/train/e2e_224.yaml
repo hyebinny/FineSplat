@@ -27,16 +27,10 @@ model:
   da_model_name: da3-giant
   da_model_weights_path: pretrained_weights/da3_giant.safetensors
   mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
-refiner_model:
-  e2e: true
-  num_iters: 4
-  refiner:
-    patch_size: 8
-  error:
-    image_embed: mvp_s1
-    stride: 4
 data:
-  data_path: src/data/dl3dv_train.txt
+  root: /scratch/y5ryan/datasets/dl3dv_480
+  split: train
+  scene_list: src/data/DL3DV/train_scenes.txt
   input_frame_select_type: uniform
   target_frame_select_type: random
   target_has_input: false
@@ -86,7 +80,6 @@ train:
   lr_schedule: cosine
   lr_decay_ratio: 0.2
   resume: true
-  init_refiner_ckpt: ../FineSplat_exp_final/train/finesplat_224_stage2/refiner_last.pt
   out_dir: ../FineSplat_e2e_ckpt/finesplat_224_e2e
   keep_step_checkpoints: false
   beta1: 0.9
@@ -107,9 +100,19 @@ train:
     project: FineSplat
     name: finesplat_224_e2e
     api_key_path: src/configs/api_keys.yaml
+  init_stage2_ckpt: ../FineSplat_exp_final/train/finesplat_224_stage2/finesplat_last.pt
 watchlist:
-  test_data_path: src/data/dl3dv_test.txt
   test_json_paths:
-    '6': src/data/dl3dv_start_0_distance_50_ctx_6v_tgt_8v.json
-    '12': src/data/dl3dv_start_0_distance_100_ctx_12v_tgt_8v.json
-    '24': src/data/dl3dv_start_0_distance_150_ctx_24v_tgt_8v.json
+    '6': src/data/DL3DV/eval_ctx6_tgt8.json
+    '12': src/data/DL3DV/eval_ctx12_tgt8.json
+    '24': src/data/DL3DV/eval_ctx24_tgt8.json
+  test_scene_list: src/data/DL3DV/test_scenes.txt
+  test_split: test
+stage2:
+  e2e: true
+  num_steps: 4
+  network:
+    patch_size: 8
+  error:
+    image_embed: mvp_s1
+    stride: 4

@@ -1,13 +1,13 @@
-"""Benchmark test-time optimization (TTO) on a refiner checkpoint's base tokens.
+"""Benchmark test-time optimization (TTO) on a checkpoint's Stage-1 tokens.
 
-The refiner config is loaded as in eval_passes (e2e checkpoints carry the fine-tuned
-base), but the refiner's output is not used: TTO starts from the base's own fused
-tokens (``tokens_base``, iteration 0) and optimizes them against the context views
+The checkpoint is loaded as in eval_passes (end-to-end checkpoints carry the fine-tuned
+Stage 1), but Stage 2's output is not used: TTO starts from Stage 1's own fused tokens
+(``tokens_base``, step 0) and optimizes them against the context views
 (src.model.tto.optimize_tokens). Every lr in ``inference.tto.lrs`` restarts from the
 same tokens, so one model load covers a whole sweep. Targets are then rendered at the
 config's cameras, or after EPA with ``inference.pose_optimization``.
 
-    <out_dir>/iter0_tto<lr>[_s<k>]/000001_<scene>/{metrics.json, tto.json}, summary.csv
+    <out_dir>/step0_tto<lr>[_s<k>]/000001_<scene>/{metrics.json, tto.json}, summary.csv
 
 ``inference.tto.steps`` [1, 5, 50, ...] scores the tokens after each step count from a
 single max(steps)-step run; tto.json then holds the time to reach that step.
@@ -29,7 +29,7 @@ from easydict import EasyDict as edict
 from omegaconf import OmegaConf
 
 from src.commands.inference import AMP_DTYPE, build_dataloader, load_model
-from src.commands.inference_refiner import load_refiner
+from src.commands.inference_finesplat import load_finesplat
 from src.model.tto import optimize_tokens
 from src.utils.eval_paths import load_eval_config, resolve_out_dir
 from src.utils.metric_utils import export_results, summarize_evaluation
@@ -46,7 +46,7 @@ def main():
     dataloader = build_dataloader(config)
     base = load_model(config, device)
     base.eval()
-    model = load_refiner(config, base, device)
+    model = load_finesplat(config, base, device)
 
     tto = OmegaConf.to_container(config.inference.tto)
     lrs = [float(x) for x in tto.pop("lrs")]
@@ -55,7 +55,7 @@ def main():
     steps = [int(k) for k in tto.pop("steps", [])] or [None]
     num_input = config.data.num_input_frames
     out_dir = out_arg or Path(resolve_out_dir(config))
-    key = lambda lr, k: f"iter0_tto{lr:g}" + ("" if k is None else f"_s{k}")
+    key = lambda lr, k: f"step0_tto{lr:g}" + ("" if k is None else f"_s{k}")
     metric_dirs = {(lr, k): out_dir / key(lr, k) for lr in lrs for k in steps}
     for d in metric_dirs.values():
         os.makedirs(d, exist_ok=True)

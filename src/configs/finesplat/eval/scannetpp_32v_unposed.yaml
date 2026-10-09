@@ -29,7 +29,7 @@ model:
   mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
 data:
   data_path: /scratch/y5ryan/datasets/scannetpp_test/scannetpp/test
-  json_path: src/data/scannetpp_ctx_32v_tgt_16v.json
+  json_path: src/data/ScanNetpp/eval_ctx32_tgt16.json
   input_frame_select_type: json_context
   target_frame_select_type: json_target
   num_input_frames: 32
@@ -53,10 +53,6 @@ inference:
   use_tf32: true
   ckpt_path: pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt
   run: finesplat_224
-  refiner:
-    ckpt_path: pretrained_weights/finesplat/e2e_224_step10k_ema.pt
-    use_ema: true
-    full_state: true
   camera_mode: pred_pose_pred_intr
   pose_optimization: true
   compute_metrics: true
@@ -66,12 +62,16 @@ inference:
   prune_keep_per_view:
   - 10368
   epa_steps: 200
-  eval_iters:
+  checkpoint:
+    ckpt_path: pretrained_weights/finesplat/e2e_224_step10k_ema.pt
+    use_ema: true
+    full_state: true
+  eval_steps:
   - 0
   - 4
-refiner_model:
-  num_iters: 4
-  refiner:
+stage2:
+  num_steps: 4
+  network:
     patch_size: 8
   error:
     image_embed: mvp_s1

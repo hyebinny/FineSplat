@@ -91,3 +91,6 @@ api_keys.yaml
 
 # Kept locally for later experiments, not published
 src/model/resplat_refiner.py
+
+# RE10K scene lists point at a local copy of the dataset
+src/data/RE10K/*.txt

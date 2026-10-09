@@ -1,21 +1,28 @@
-"""Benchmark the refiner's final Gaussians after opacity pruning.
+"""Benchmark FineSplat's final Gaussians after pruning.
 
-Opacity is degree-0 SH (view-independent), so a Gaussian's effective opacity is
-sigmoid(SH_C0 * coeff) and one threshold tau removes the same set from every view. Each
-scene runs one forward; every tau in ``inference.prune_taus`` then prunes the last
-iteration's Gaussians, renders the targets and scores them. tau 0 keeps everything and
-writes to the regular iter<N>/ directory.
+Each scene runs one forward; the last step's Gaussians are then pruned, rendered at the
+targets and scored, once per pruning level:
+
+  prune_mode "contribution" (the paper's): keep the ``prune_keep_per_view`` * V Gaussians
+      with the highest contribution score - the mean over the context views of the
+      Gaussian's total compositing weight sum_pixels(T_i * alpha_i). ZipSplat's count
+      (10,368 per view) is filed as <out_dir>/step4_prune/, other counts as
+      step4_contrib<k>pv/.
+  prune_mode "radsplat": same top-k selection on RadSplat's importance (max blending
+      weight over every ray) -> step4_radsplat<k>pv/.
+  prune_mode "opacity": sigmoid(SH_C0 * coeff) >= tau for every tau in ``prune_taus``
+      -> step4_prune<tau>/; tau 0 keeps everything and writes to step4/.
 
 Cameras follow the eval config: without ``inference.pose_optimization`` the targets are
 rendered at the config's cameras; with it, EPA re-aligns the target poses against each
 pruned set, since the pruned 3DGS is the model being evaluated.
 
-    <out_dir>/iter4_prune0.01/000001_<scene>/{metrics.json, gs_count.json}
-    <out_dir>/iter4_prune0.01/summary.csv
+    <out_dir>/step4_prune/000001_<scene>/{metrics.json, gs_count.json}
+    <out_dir>/step4_prune/summary.csv
 
 ``inference.scene_range`` [lo, hi) runs one shard and leaves the summaries to a final
 pass. ``inference.vis_save: {root, subdir, tag}`` also writes each render to
-<root>/<tag>_iter4[_prune<tau>]/<subdir>/<scene>/<frame:03d>.png.
+<root>/<tag>_<level>/<subdir>/<scene>/<frame:03d>.png.
 
     python -m src.commands.eval_prune <eval_config> [out_dir] [inference.key=value ...]
 """
@@ -33,7 +40,7 @@ from gsplat.cuda._wrapper import rasterize_to_indices_in_range
 from omegaconf import OmegaConf
 
 from src.commands.inference import AMP_DTYPE, build_dataloader, load_model
-from src.commands.inference_refiner import load_refiner
+from src.commands.inference_finesplat import load_finesplat
 from src.utils.eval_paths import load_eval_config, resolve_out_dir
 from src.utils.metric_utils import export_results, summarize_evaluation
 from src.model.sh_eval import _spherical_harmonics
@@ -143,14 +150,14 @@ def main():
     dataloader = build_dataloader(config)
     base = load_model(config, device)
     base.eval()
-    model = load_refiner(config, base, device)
-    model.keep_iter_gaussians = True
+    model = load_finesplat(config, base, device)
+    model.keep_step_gaussians = True
 
     # prune_mode "opacity": prune_taus thresholds. "contribution" / "radsplat": keep the top
     # prune_keep_per_view * V Gaussians by contribution_scores / radsplat_scores over the
     # context views.
     mode = config.inference.get("prune_mode", "opacity")
-    last = f"iter{config.refiner_model.num_iters}"
+    last = f"step{config.stage2.num_steps}"
     if mode == "opacity":
         levels = [float(t) for t in config.inference.get("prune_taus", [0.01])]
         name = lambda t: last if t == 0 else f"{last}_prune{t}"

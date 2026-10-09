@@ -7,6 +7,8 @@ import numpy as np
 from dataclasses import dataclass
 from torch.utils.data import Dataset
 
+from src.datasets.scene_lists import resolve_scene_paths
+
 from src.utils.dataset_utils import (
     _load_frame_image_and_intrinsics,
     _w2c_stack_to_c2w,
@@ -61,23 +63,9 @@ class InferenceDataset(Dataset):
             config: OmegaConf config containing data settings for inference.
         """
         self.config = config
-        self.scene_json_paths = self._load_scene_paths(config.data.data_path)
+        self.scene_json_paths = resolve_scene_paths(config.data)
         self.scene_dict = self._load_scene_eval_index(config.data.get("json_path", None))
 
-    @staticmethod
-    def _load_scene_paths(data_list_file: str) -> list[str]:
-        """Resolve scene JSON paths; relative paths are anchored to the list file's directory.
-
-        Args:
-            data_list_file: Path to a text file listing scene JSON paths, one per line.
-
-        Returns:
-            A list of absolute paths to scene JSON files.
-        """
-        data_folder = data_list_file.rsplit('/', 1)[0]
-        with open(data_list_file, 'r') as f:
-            paths = [line.strip() for line in f if line.strip()]
-        return [p if p.startswith("/") else os.path.join(data_folder, p) for p in paths]
 
     @staticmethod
     def _load_scene_eval_index(json_path: str) -> dict:

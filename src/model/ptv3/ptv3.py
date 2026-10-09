@@ -19,7 +19,7 @@ from .torch_scatter_compat import segment_csr
 # spconv.ops.implicit_gemm with the GPU idle, unrecoverable). We therefore default to
 # the plain gather/scatter kernels (PTV3_SPCONV_ALGO=default restores spconv's choice)
 # and drop xCPE altogether (PTV3_DISABLE_CPE=0 re-enables it), which removes spconv
-# from the graph completely. All shipped refiner checkpoints were trained without xCPE.
+# from the graph completely. All shipped Stage-2 checkpoints were trained without xCPE.
 _SPCONV_ALGO = (
     None if os.getenv("PTV3_SPCONV_ALGO", "native") == "default" else spconv.ConvAlgo.Native
 )

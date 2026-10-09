@@ -33,17 +33,17 @@ model:
 
 
 data:
-  data_path: src/data/dl3dv_test.txt
+  data_path: src/data/DL3DV/test_scenes.txt
 
   # Context/target view configurations from YoNoSplat (pick one):
-  #   distance=50, 6 ctx / 8 tgt: src/data/dl3dv_start_0_distance_50_ctx_6v_tgt_8v.json
-  #   distance=100, 12 ctx / 8 tgt: src/data/dl3dv_start_0_distance_100_ctx_12v_tgt_8v.json
-  #   distance=150, 24 ctx / 8 tgt: src/data/dl3dv_start_0_distance_150_ctx_24v_tgt_8v.json
+  #   distance=50, 6 ctx / 8 tgt: src/data/DL3DV/eval_ctx6_tgt8.json
+  #   distance=100, 12 ctx / 8 tgt: src/data/DL3DV/eval_ctx12_tgt8.json
+  #   distance=150, 24 ctx / 8 tgt: src/data/DL3DV/eval_ctx24_tgt8.json
 
   # FIXME
-  json_path: src/data/dl3dv_start_0_distance_50_ctx_6v_tgt_8v.json
-  # json_path: src/data/dl3dv_start_0_distance_100_ctx_12v_tgt_8v.json
-  # json_path: src/data/dl3dv_start_0_distance_150_ctx_24v_tgt_8v.json
+  json_path: src/data/DL3DV/eval_ctx6_tgt8.json
+  # json_path: src/data/DL3DV/eval_ctx12_tgt8.json
+  # json_path: src/data/DL3DV/eval_ctx24_tgt8.json
 
   input_frame_select_type: json_context
   target_frame_select_type: json_target

@@ -25,7 +25,7 @@ densification 75,264 → 95,648 GS.
 기본입니다. 그대로 돌리면 됩니다:
 
 ```bash
-cd /scratch2/binny56/projects/ICLR2027/2Xplat_base
+cd /scratch2/binny56/projects/ICLR2027/FineSplat
 CUDA_VISIBLE_DEVICES=0 python -m src.commands.inference \
   --config src/configs/3Xplat_init_posed_only/dl3dv_224_6v.yaml
 ```

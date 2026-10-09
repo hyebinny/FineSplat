@@ -1,29 +1,29 @@
-"""Flat PTv3 refinement of frozen 2Xplat, conditioned on the context-view rendering error.
+"""Stage 2 of FineSplat: error-conditioned correction of the Stage-1 tokens.
 
-Port of ZipSplat's ``splatfactory/models/networks/zipsplat_ptv3_refiner.py``. 2Xplat is
-frozen. Each fused patch token (the DPT-head output right before ``gaussian_decoder``)
-becomes one point whose position is the mean of the ``gaussians_per_patch`` Gaussians it
-decodes into. The frozen Gaussians are rendered into the context views and compared with
-the inputs: a per-view error map (frozen ResNet-18 feature difference + RGB difference)
-concatenated with an embedding of the input image itself, at 1/stride resolution. The map
-is lifted onto the points by projecting every point into every view and averaging the
-bilinear samples over the views it is visible in (its home view always counts),
-concatenated with the error at its own patch. Token and error embeddings are fused and go
-through PTv3 blocks (xCPE + serialized window attention + FFN) with no pooling and no
-decoder. A zero-initialised linear head predicts a residual on the tokens, which 2Xplat's
-own frozen head decodes into the refined Gaussians.
+Stage 1 (2Xplat: DA3 + MVP) predicts one fused token per 4x4 patch, which its Gaussian
+head decodes into 4 Gaussians. Stage 2 runs ``num_steps`` (4) correction steps on top. Each
+step renders the current Gaussians into the context views, compares them with the inputs
+(a per-view error map: frozen ResNet-18 feature difference + RGB difference, concatenated
+with an embedding of the input view itself, at 1/stride resolution), lifts the map onto
+the tokens by projecting every token into every view and averaging the bilinear samples
+over the views it is visible in (its home view always counts, concatenated with the error
+at its own patch), fuses token and error embeddings, and runs them through PTv3 blocks
+(serialized window attention + FFN, no pooling, no decoder) over the whole token cloud. A
+zero-initialised linear head predicts a token residual, which the Stage-1 head decodes
+into the next step's Gaussians.
 
-Differences from the ZipSplat original, all forced by the base model:
+Ported from ZipSplat's ``splatfactory/models/networks/zipsplat_ptv3_refiner.py``, with the
+differences the base model forces:
   - 18,816 tokens per scene at 6 views (6 x 56 x 56), against ZipSplat's 1,944. The flat
     design's premise - "a 1024 window already covers half the scene" - does not hold here;
     ``patch_size`` is left at 1024 regardless, so a window sees ~5% of the scene.
   - 4 Gaussians per token, against 32.
-  - 2Xplat has no colour skip connection, so the whole token stream is refined.
+  - 2Xplat has no colour skip connection, so the whole token stream is corrected.
   - Opacity goes through 2Xplat's SH path per view. At the shipped ``opacity_degree: 0``
     that path is view-independent (the DC band is a constant), so the per-view evaluation
     is redundant; it is kept because the surrounding code is written for any degree.
 
-    python -m src.model.ptv3_refiner   # self-check (needs a GPU)
+    python -m src.model.stage2   # self-check (needs a GPU)
 """
 
 import contextlib
@@ -48,20 +48,20 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 default_conf = {
     # "token":    one point per patch token, feature = the 1024-d token, the head predicts a
-    #             token residual that 2Xplat's frozen Gaussian head then decodes.
+    #             token residual that the Stage-1 Gaussian head then decodes.
     # "gaussian": one point per Gaussian (4x as many), feature = that Gaussian's raw 23
     #             pre-activation parameters, the head predicts a residual on them. The
     #             Gaussian head is not re-run; only the activations and ray
     #             parameterisation are, so every bound they impose still holds.
     "mode": "token",
-    # Refinement passes per forward. Each pass re-renders the context views from the
-    # Gaussians the previous pass produced, so the error map it reads is the error that
-    # remains - which is what a single-pass model never sees, and why applying a
-    # single-pass refiner twice at test time degraded after the second pass. ReSplat runs
-    # 2-4, MoGe3 runs 3. Tokens are detached between passes so each pass learns to improve
-    # whatever state it is handed, rather than backpropagating through the whole chain.
-    "num_iters": 1,
-    "refiner": {
+    # Stage-2 steps per forward. Each step re-renders the context views from the Gaussians
+    # the previous step produced, so the error map it reads is the error that remains -
+    # which is what a single-step model never sees, and why applying a single-step model
+    # twice at test time degraded after the second application. ReSplat runs 2-4, MoGe3
+    # runs 3. Tokens are detached between steps so each step learns to improve whatever
+    # state it is handed, rather than backpropagating through the whole chain.
+    "num_steps": 4,
+    "network": {
         "width": 512,
         "depth": 4,
         "attn_channels": 256,  # q/k/v width (num_heads x 16); == width gives plain PTv3 attention
@@ -101,7 +101,7 @@ def _sample_sparse(imgs: torch.Tensor, pix: torch.Tensor, img_idx: torch.Tensor,
 
     Same convention as ``_sample`` (align_corners=False, padding_mode="border") written as a
     gather so that only the P (token, view) pairs that survive the frustum test are touched.
-    Sampling every token in every view costs O(V * K) = O(V^2) work per pass, while a token
+    Sampling every token in every view costs O(V * K) = O(V^2) work per step, while a token
     is visible in only a handful of views regardless of how many there are.
     """
     n, c, h, w = imgs.shape
@@ -189,7 +189,7 @@ class ErrorMapEncoder(nn.Module):
         self.err_norm = nn.LayerNorm(width) if self.use_err else None
         # "gt_rgb": our own 4x4 patch embedding of the context image. "mvp_s1": the frozen
         # base's stage-1 patch tokens for the same view, which are its own 4x4 patch
-        # embedding already computed in the encode pass - nothing extra is run.
+        # embedding already computed by Stage 1 - nothing extra is run.
         img_in = {"gt_rgb": 3 * stride * stride, "mvp_s1": mvp_dim}.get(self.image_embed)
         self.img_proj = (
             nn.Sequential(nn.Linear(img_in, img_width), nn.LayerNorm(img_width))
@@ -222,8 +222,8 @@ class ErrorMapEncoder(nn.Module):
     def image_map(self, gt: torch.Tensor, mvp_feat: torch.Tensor | None = None):
         """The image half of the map, [N, gh, gw, img_width].
 
-        Neither the input image nor the base's stage-1 tokens change between refinement
-        passes, so this is computed once per forward and handed to every pass.
+        Neither the input image nor the base's stage-1 tokens change between Stage-2
+        steps, so this is computed once per forward and handed to every step.
         """
         if self.img_proj is None:
             return None
@@ -240,7 +240,7 @@ class ErrorMapEncoder(nn.Module):
         """render, gt [N,3,H,W] -> [N, width + img_width, gh, gw].
 
         ``gt_feat`` is the backbone's features for ``gt``, which do not change between
-        refinement passes. Passing them in keeps the ResNet at one call per pass instead of
+        Stage-2 steps. Passing them in keeps the ResNet at one call per step instead of
         two; ReSplat caches the same thing (``assert i == 0`` on its first pass).
         ``mvp_feat`` [N, mvp_dim, gh, gw] is the frozen base's stage-1 patch tokens, read
         only when ``image_embed == "mvp_s1"``.
@@ -286,11 +286,11 @@ class ErrorGlobalAttn(nn.Module):
     The maps are narrowed to ``attn_channels`` and pixel-unshuffled by ``down`` before
     attention, so the tokens that attend are a factor ``down`` coarser than the map. At
     224px with error stride 4 and down 4 that is 6 x 14 x 14 = 1176 tokens of 64 channels -
-    negligible next to the 18,816 points the refiner itself runs on.
+    negligible next to the 18,816 points Stage 2 itself runs on.
 
-    Optional: the world-grid refiner already mixes views inside its serialized windows and
+    Optional: the world-grid Stage 2 already mixes views inside its serialized windows and
     through the projected error lifting, so this module is off in the best configuration
-    (token_iter4) and used by the ReSplat port, where it is the only cross-view path.
+    and used by the ReSplat port, where it is the only cross-view path.
     """
 
     def __init__(self, channels: int, down: int = 4, attn_channels: int = 64,
@@ -561,7 +561,7 @@ def _block(channels, attn_channels, num_heads, patch_size, drop_path, order_inde
     return blk
 
 
-class FlatPTv3Refiner(nn.Module):
+class Stage2(nn.Module):
     """Token + error embeddings -> `depth` PTv3 blocks over the whole token cloud -> token residual."""
 
     def __init__(self, conf, token_dim: int, error_channels: int, z_dim: int,
@@ -660,21 +660,21 @@ class FlatPTv3Refiner(nn.Module):
         return self.head(feat).view(B, K, self.z_dim)
 
 
-class TwoXplatPTv3Refiner(nn.Module):
-    """Frozen 2Xplat + error-conditioned PTv3 token refiner.
+class FineSplat(nn.Module):
+    """FineSplat: Stage 1 (2Xplat) + Stage 2 (error-conditioned PTv3 token correction).
 
-    ``forward`` returns the refined target-view renderings with gradients, plus the frozen
-    baseline renderings for reference.
+    ``forward`` returns the target-view renderings after every Stage-2 step, with
+    gradients, plus the Stage-1 Gaussians and rendering for reference.
     """
 
     def __init__(self, model, conf: dict):
         super().__init__()
-        # e2e: true unfreezes the whole 2Xplat base (DA3 + MVP + GS head) and trains it
-        # jointly with the refiner, as in 2Xplat's own update stage. Default keeps the
-        # shipped behaviour: the base is frozen and only the refiner learns.
+        # e2e: true unfreezes the whole Stage 1 (DA3 + MVP + GS head) and trains it
+        # jointly with Stage 2, as in 2Xplat's own update stage. Default: Stage 1 is
+        # frozen and only Stage 2 learns.
         self.e2e = conf.get("e2e", False)
-        # grad_ckpt: recompute each pass's refiner forward in backward instead of keeping
-        # its activations (every pass's graph lives until the single backward).
+        # grad_ckpt: recompute each step's Stage-2 forward in backward instead of keeping
+        # its activations (every step's graph lives until the single backward).
         self.grad_ckpt = conf.get("grad_ckpt", False)
         self.model = model  # TwoExpertModel (frozen unless e2e)
         if not self.e2e:
@@ -699,20 +699,20 @@ class TwoXplatPTv3Refiner(nn.Module):
             self.patch = expert.gaussian_stride
         self.side = self.image_size // self.patch
 
-        self.num_iters = conf.get("num_iters", 1)
+        self.num_steps = conf.get("num_steps", 4)
         # Context views to re-render with gradients so the loss can score them. The error
-        # map already shows the refiner its context error; supervising only the held-out
+        # map already shows Stage 2 its context error; supervising only the held-out
         # views leaves it to infer that closing that error helps them. Test-time
         # optimisation closes it directly and gains +1.76 PSNR on the held-out views, so
         # the signal transfers - it is simply not in the objective. 0 keeps the shipped
         # behaviour. The views are drawn once per forward; rendering all of them would cost
         # a backward through V renders, which the 32-view bucket cannot afford.
-        # train_refiner overwrites this from train.loss_views.context and pools the
-        # per-pass renders with the target views into a single loss.
+        # train_finesplat overwrites this from train.loss_views.context and pools the
+        # per-step renders with the target views into a single loss.
         self.context_loss_views = conf.get("context_loss_views", 0)
-        # Set by evaluation code that re-renders each pass (EPA); off during training so
-        # the Gaussians of earlier passes are freed as soon as their render is taken.
-        self.keep_iter_gaussians = False
+        # Set by evaluation code that re-renders each step (EPA); off during training so
+        # the Gaussians of earlier steps are freed as soon as their render is taken.
+        self.keep_step_gaussians = False
 
         err = conf["error"]
         self.error = ErrorMapEncoder(
@@ -750,16 +750,16 @@ class TwoXplatPTv3Refiner(nn.Module):
         if self.gaussian_token_feat:
             self.token_broadcast = nn.Sequential(
                 nn.LayerNorm(model.dim3), nn.Linear(model.dim3, conf.get("token_feat_channels", 512)))
-            self.refiner = FlatPTv3Refiner(
-                conf["refiner"], point_dim, err["lift_channels"],
+            self.stage2 = Stage2(
+                conf["network"], point_dim, err["lift_channels"],
                 None if self.gaussian_delta_z else point_dim,
                 aux_channels=conf.get("token_feat_channels", 512), raw_input=True)
             if self.gaussian_delta_z:
-                self.token_head = nn.Linear(self.G * conf["refiner"]["width"], model.dim3)
+                self.token_head = nn.Linear(self.G * conf["network"]["width"], model.dim3)
                 nn.init.zeros_(self.token_head.weight)  # step 0 reproduces the frozen model
                 nn.init.zeros_(self.token_head.bias)
         else:
-            self.refiner = FlatPTv3Refiner(conf["refiner"], point_dim, err["lift_channels"], point_dim)
+            self.stage2 = Stage2(conf["network"], point_dim, err["lift_channels"], point_dim)
         self._logged = False
 
     def _to_gaussians(self, x: torch.Tensor, v: int) -> torch.Tensor:
@@ -869,20 +869,20 @@ class TwoXplatPTv3Refiner(nn.Module):
             )
         render0 = None
         if self.e2e and self.training:
-            # 2Xplat's own objective on the base prediction (iter 0), so the base keeps
-            # being supervised directly and not only through the refiner passes.
+            # 2Xplat's own objective on the Stage-1 prediction (step 0), so Stage 1 keeps
+            # being supervised directly and not only through the Stage-2 steps.
             with torch.autocast(device_type="cuda", enabled=False):
                 render0, _ = self._render_views(
                     g0, cameras.pred_t_c2w, cameras.pred_t_fxfycxcy, with_grad=True,
                 )
 
-        # K is the number of refined points: tokens in token mode, Gaussians in gaussian
+        # K is the number of corrected points: tokens in token mode, Gaussians in gaussian
         # mode. self.side is set per mode in __init__ (56 vs 112), so the check holds in both.
         B = tokens.shape[0]
         K = tokens.shape[1] if self.mode == "token" else raw.shape[1]
         assert K == v * self.side ** 2, (K, v, self.side)
         gt_ctx = rearrange(input_data["image"], "b v c h w -> (b v) c h w").float()
-        gt_feat = self.error.features(gt_ctx)  # constant across passes
+        gt_feat = self.error.features(gt_ctx)  # constant across steps
         # image_embed="mvp_s1": reuse the frozen base's stage-1 patch tokens (its own 4x4
         # patch embedding of this view) instead of embedding the raw image ourselves.
         mvp_feat = None
@@ -890,30 +890,30 @@ class TwoXplatPTv3Refiner(nn.Module):
             gh = self.image_size // expert.patch_size
             mvp_feat = rearrange(s1.detach(), "n (hh ww) d -> n d hh ww", hh=gh, ww=gh)
         # The image half of the error map reads only the context views, which do not change
-        # between passes, so it is projected once here rather than inside every pass.
+        # between steps, so it is projected once here rather than inside every step.
         img_map = self.error.image_map(gt_ctx, mvp_feat)
 
         # In gaussian mode every Gaussian is its own point, so the coordinate is exact
         # rather than the mean of the four Gaussians a token decodes into.
         points = tokens if self.mode == "token" else raw.float()
-        # The parent token does not change across passes (only the Gaussians move), so its
+        # The parent token does not change across steps (only the Gaussians move), so its
         # broadcast is computed once. Detached like ReSplat's prev-gaussian inputs. In
-        # delta-z mode the tokens DO change every pass, so aux is rebuilt inside the loop.
+        # delta-z mode the tokens DO change every step, so aux is rebuilt inside the loop.
         aux = (self._to_gaussians(self.token_broadcast(tokens), v)
                if self.gaussian_token_feat and not self.gaussian_delta_z else None)
         g, renders, n_vis = g0, [], None
-        # Per-pass Gaussians are only kept when something downstream needs to re-render
-        # them - EPA scores each pass by realigning the target poses against that pass's
+        # Per-step Gaussians are only kept when something downstream needs to re-render
+        # them - EPA scores each step by realigning the target poses against that step's
         # own Gaussians, which the rendered images alone cannot support.
         gaussians_all = []
         ctx_renders, ctx_indices = [], None
         # An int applies to every view-count bucket; a dict maps the bucket's view count to
-        # its own quota (train_refiner builds it from loss_views.context as a list).
+        # its own quota (train_finesplat builds it from loss_views.context as a list).
         k_ctx = (self.context_loss_views if isinstance(self.context_loss_views, int)
                  else self.context_loss_views.get(v, 0))
         if k_ctx and self.training:
             ctx_indices = torch.randperm(v, device=gt_ctx.device)[:min(k_ctx, v)]
-        for _ in range(self.num_iters):
+        for _ in range(self.num_steps):
             with torch.no_grad():
                 ctx_rgb, ctx_depth = self._render_views(
                     g, cameras.pred_i_c2w, cameras.pred_i_fxfycxcy,
@@ -941,9 +941,9 @@ class TwoXplatPTv3Refiner(nn.Module):
                 E, ctx_depth, coord, cameras.pred_i_c2w, cameras.pred_i_fxfycxcy,
                 self.patch, self.side, self.image_size,
             )
-            if self.refiner.attn_mode in ("inframe", "xframe"):
+            if self.stage2.attn_mode in ("inframe", "xframe"):
                 grids = [("idx", _grid_neighbors(
-                    self.refiner.attn_mode, B, v, self.side, coord.device, coord=coord,
+                    self.stage2.attn_mode, B, v, self.side, coord.device, coord=coord,
                     c2w=cameras.pred_i_c2w, fxfycxcy=cameras.pred_i_fxfycxcy,
                     depth=ctx_depth.view(B, v, *ctx_depth.shape[-2:]), patch=self.patch,
                     size=self.image_size, tol=self.conf["error"]["occlusion_tol"]))]
@@ -951,17 +951,17 @@ class TwoXplatPTv3Refiner(nn.Module):
                 grids = self._grids(coord, g, B, K)
             if self.gaussian_delta_z:
                 aux = self._to_gaussians(self.token_broadcast(tokens), v)
-                feat = self._run_refiner(points.detach(), err, grids, aux=aux)
+                feat = self._run_stage2(points.detach(), err, grids, aux=aux)
                 tokens = tokens + self.token_head(self._gs_to_token(feat, v))
             elif self.gaussian_token_feat:
-                points = points + self._run_refiner(points.detach(), err, grids, aux=aux)
+                points = points + self._run_stage2(points.detach(), err, grids, aux=aux)
             else:
-                points = points + self._run_refiner(points, err, grids)
+                points = points + self._run_stage2(points, err, grids)
 
             # Decode under the ambient autocast, exactly as src/commands/inference.py does,
             # so that delta = 0 reproduces 2Xplat's own numbers bit for bit. ZipSplat forces
             # its head to fp32; matching 2Xplat's evaluation protocol matters more here,
-            # since the fp32 head shifted PSNR by +0.06 - a seventh of the refiner's gain.
+            # since the fp32 head shifted PSNR by +0.06 - a seventh of Stage 2's gain.
             if self.mode == "token":
                 g = expert.decode_from_tokens(
                     points, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
@@ -972,7 +972,7 @@ class TwoXplatPTv3Refiner(nn.Module):
                 # only the activations, so the offset stays in its sub-cell, depth stays
                 # inside (0, max_dist) and scale stays clamped. In delta-z mode the residual
                 # landed on the tokens instead, so the raw parameters (which are also the
-                # next pass's point features) are re-decoded from them through the frozen head.
+                # next step's point features) are re-decoded from them through the frozen head.
                 if self.gaussian_delta_z:
                     points = expert.raw_from_tokens(tokens, v, h, w).float()
                 g = expert.gaussians_from_raw(
@@ -984,21 +984,21 @@ class TwoXplatPTv3Refiner(nn.Module):
                     g, cameras.pred_t_c2w, cameras.pred_t_fxfycxcy, with_grad=True,
                 )
             renders.append(render)
-            if self.keep_iter_gaussians:
+            if self.keep_step_gaussians:
                 gaussians_all.append(g)
-            # Each pass is supervised on its own render and starts from a detached state, so
+            # Each step is supervised on its own render and starts from a detached state, so
             # it learns to improve whatever it is handed instead of relying on gradients
-            # reaching back through every earlier pass.
+            # reaching back through every earlier step.
             points = points.detach()
             if self.gaussian_delta_z:
                 tokens = tokens.detach()
 
         if not self._logged:
             print(f"flat PTv3 ({self.mode}): {K} points/scene, attention window "
-                  f"{self.refiner.window}, {self.num_iters} iter(s) (batch of {B}); "
+                  f"{self.stage2.window}, {self.num_steps} step(s) (batch of {B}); "
                   f"tokens visible in {n_vis.mean():.2f} views on average", flush=True)
             self._logged = True
-        # "points" is what the head decodes: the refined tokens in token mode, the raw
+        # "points" is what the head decodes: the corrected tokens in token mode, the raw
         # Gaussian parameters in gaussian mode. Exposed so the displacement it represents
         # can be compared against the one test-time optimisation finds for the same scene.
         return {"render": renders[-1], "renders": renders, "gaussians": g,
@@ -1008,10 +1008,10 @@ class TwoXplatPTv3Refiner(nn.Module):
                 "context_renders": ctx_renders, "context_indices": ctx_indices,
                 "cameras": cameras, "error_views": n_vis}
 
-    def _run_refiner(self, *args, **kwargs):
+    def _run_stage2(self, *args, **kwargs):
         if self.grad_ckpt and self.training and torch.is_grad_enabled():
-            return torch.utils.checkpoint.checkpoint(self.refiner, *args, use_reentrant=False, **kwargs)
-        return self.refiner(*args, **kwargs)
+            return torch.utils.checkpoint.checkpoint(self.stage2, *args, use_reentrant=False, **kwargs)
+        return self.stage2(*args, **kwargs)
 
     def _token_coord(self, xyz: torch.Tensor, v: int) -> torch.Tensor:
         """Mean position of each token's Gaussians, (B, N, 3) -> (B, K, 3).
@@ -1035,12 +1035,11 @@ class TwoXplatPTv3Refiner(nn.Module):
 
         A per-view frustum grid and an alternating frustum/world schedule were tried and
         retired; both measured at or below this (frustum +0.86, alternate +1.01, world
-        +1.16 on the test watchlist). The frustum-era code is archived at
-        experiments/_archive/ptv3_refiner_with_frustum.py.
+        +1.16 on the test watchlist).
         """
         lo = g0.xyz.amin(dim=-2, keepdim=True)
         span = (g0.xyz.amax(dim=-2, keepdim=True) - lo).clamp(min=EPS)
-        res = self.conf["refiner"]["grid_resolution"]
+        res = self.conf["network"]["grid_resolution"]
         grid = (((coord - lo) / span) * res).floor().int().clamp(0, res - 1)
         offset = torch.arange(1, b + 1, device=coord.device) * k
         return [(grid, offset)]

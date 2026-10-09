@@ -1,4 +1,4 @@
-"""Fixed watchlist scenes evaluated on a schedule during refiner training.
+"""Fixed watchlist scenes evaluated on a schedule during FineSplat training.
 
 Ten held-out test scenes and ten training scenes, evaluated at 6, 12 and 24 context
 views. The scenes and their context/target indices never change, so the W&B curves
@@ -18,6 +18,8 @@ import os
 
 import numpy as np
 import torch
+
+from src.datasets.scene_lists import resolve_scene_paths
 import torchvision
 
 from src.datasets.dataset import InferenceDataset
@@ -57,7 +59,7 @@ def _write_train_index(scene_paths: list[str], out_path: str, num_ctx: int, span
 
 
 def _subset_list(src_list: str, dst_list: str, n: int) -> list[str]:
-    """Write the first n scene paths of src_list to dst_list; return them."""
+    """Write the first n lines of src_list to dst_list; return them."""
     with open(src_list) as f:
         paths = [line.strip() for line in f if line.strip()][:n]
     with open(dst_list, "w") as f:
@@ -87,10 +89,19 @@ def build_watchlists(config, work_dir: str) -> dict:
              config.watchlist.get("view_spans", {str(k): v for k, v in VIEW_SPANS.items()}).items()}
     datasets = {}
 
+    # With data.root the lists hold scene ids (data.scene_list / watchlist.test_scene_list)
+    # under <root>/<split>; otherwise they list camera json paths (data.data_path /
+    # watchlist.test_data_path). Either way the first NUM_SCENES entries are the watchlist.
+    by_root = bool(config.data.get("root", None))
+    list_key = "scene_list" if by_root else "data_path"
+    test_src = config.watchlist.get("test_scene_list" if by_root else "test_data_path")
     test_list = os.path.join(work_dir, "watchlist_test.txt")
-    _subset_list(config.watchlist.test_data_path, test_list, NUM_SCENES)
+    _subset_list(test_src, test_list, NUM_SCENES)
     train_list = os.path.join(work_dir, "watchlist_train.txt")
-    train_paths = _subset_list(config.data.data_path, train_list, NUM_SCENES)
+    _subset_list(config.data[list_key], train_list, NUM_SCENES)
+    train_cfg0 = deepcopy(config)
+    train_cfg0.data[list_key] = train_list
+    train_paths = resolve_scene_paths(train_cfg0.data)
 
     for views, span in spans.items():
         base = deepcopy(config)
@@ -100,12 +111,14 @@ def build_watchlists(config, work_dir: str) -> dict:
         base.data.num_target_frames = NUM_TGT
 
         test_cfg = deepcopy(base)
-        test_cfg.data.data_path = test_list
+        test_cfg.data[list_key] = test_list
+        if by_root:
+            test_cfg.data.split = config.watchlist.get("test_split", "test")
         test_cfg.data.json_path = json_paths[str(views)]
         datasets[("test", views)] = ds_cls(test_cfg)
 
         train_cfg = deepcopy(base)
-        train_cfg.data.data_path = train_list
+        train_cfg.data[list_key] = train_list
         train_cfg.data.json_path = _write_train_index(
             train_paths, os.path.join(work_dir, f"watchlist_train_index_{views}v.json"), views, span)
         datasets[("train", views)] = ds_cls(train_cfg)

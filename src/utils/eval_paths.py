@@ -13,7 +13,7 @@ alone:
 
 ``resize_mode`` sits high because it is not a property of the model being scored. DL3DV_480
 is 480x270, so every evaluation resizes, and the filter moves 6-view PSNR from 26.09 to
-27.02 - more than the refiner itself. Numbers from two filters are not comparable, so they
+27.02 - more than Stage 2 itself. Numbers from two filters are not comparable, so they
 never share a parent.
 
 ``camera_mode`` gains an ``_epa`` suffix when the poses are realigned against the
@@ -73,16 +73,16 @@ def ckpt_tag(config) -> str | None:
     """A level under the run for a specific checkpoint, or None for the run's latest.
 
     Scoring several checkpoints of one training run is a question about that run, so they
-    belong under it rather than beside it as ``<run>_step2000``. ``refiner_last.pt`` and
-    ``refiner_best.pt`` get no level - they are what "the run" means with no qualifier.
+    belong under it rather than beside it as ``<run>_step2000``. ``finesplat_last.pt`` and
+    ``finesplat_best.pt`` get no level - they are what "the run" means with no qualifier.
     """
     tag = config.get("inference", {}).get("ckpt_tag")
     if tag:
         return tag
-    path = config.get("inference", {}).get("refiner", {}).get("ckpt_path")
+    path = config.get("inference", {}).get("checkpoint", {}).get("ckpt_path")
     if not path:
         return None
-    m = re.fullmatch(r"refiner_step_0*(\d+)", Path(path).stem)
+    m = re.fullmatch(r"(?:finesplat|refiner)_step_0*(\d+)", Path(path).stem)
     return f"step{m.group(1)}" if m else None
 
 
@@ -154,8 +154,8 @@ if __name__ == "__main__":
     cfg.data.resize_mode = "bilinear_antialias"
     assert str(eval_out_dir(cfg, "r", root="/tmp/x")) == \
         "/tmp/x/252res/bilinear_antialias/dl3dv/6v/pred_pose_gt_intr/r"
-    cfg.inference.refiner = {"ckpt_path": "/a/b/refiner_step_002000.pt"}
+    cfg.inference.checkpoint = {"ckpt_path": "/a/b/finesplat_step_002000.pt"}
     assert eval_out_dir(cfg, "r", root="/tmp/x").parts[-2:] == ("r", "step2000")
-    cfg.inference.refiner = {"ckpt_path": "/a/b/refiner_last.pt"}
+    cfg.inference.checkpoint = {"ckpt_path": "/a/b/finesplat_last.pt"}
     assert eval_out_dir(cfg, "r", root="/tmp/x").name == "r"
     print("ok", got)
