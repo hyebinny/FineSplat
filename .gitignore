@@ -1,0 +1,93 @@
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor
+.vscode/
+.idea/
+.sublime-project
+.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Node modules
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build & dist
+dist/
+build/
+.next/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Large media files
+*.mov
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+*.cache
+
+# Temporary files
+*.tmp
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Experiments & outputs
+experiments/
+src/configs/2Xplat_refiner_final/
+src/configs/3Xplat_final/
+src/configs/inference/
+src/configs/refiner_6v_fixed/
+src/configs/TTO/
+wandb/
+wandb_old/
+visualize/
+outputs/
+runs/
+checkpoints/
+
+# Data & weights
+pretrained_weights/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.bin
+
+# API keys
+api_keys.yaml
+
+
+# Kept locally for later experiments, not published
+src/model/resplat_refiner.py

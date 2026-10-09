@@ -1,0 +1,7 @@
+# src/configs/api_keys.yaml 에서 wandb api key 변경
+
+# Training
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node 4 --nnodes 1 --rdzv_id 1234 --rdzv_endpoint localhost:1234 -m src.commands.train_refinement --config src/configs/train_update_dynamic.yaml
+
+# Inference
+CUDA_VISIBLE_DEVICES=0 python -m src.commands.inference --config src/configs/inference.yaml

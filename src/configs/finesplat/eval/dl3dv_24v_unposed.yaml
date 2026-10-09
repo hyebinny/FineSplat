@@ -1,0 +1,78 @@
+model:
+  class_name: src.model.model.TwoExpertModel
+  dim1: 256
+  dim2: 512
+  dim3: 1024
+  num_register_tokens: 4
+  head_dim: 64
+  inter_multi: 4
+  qk_norm: true
+  stage1_nlayer: 2
+  stage2_nlayer: 4
+  stage3_nlayer: 8
+  group_size: 2
+  patch_size: 4
+  gaussians_per_patch: 4
+  in_channels: 12
+  gaussians:
+    sh_degree: 1
+    opacity_degree: 0
+    near_plane: 0.01
+    far_plane: 1000000.0
+    scale_bias: -5.5137
+    scale_max: -1.2
+    opacity_bias: 4.0
+    align_to_pixel: true
+    max_dist: 500.0
+  da_model_name: da3-giant
+  da_model_weights_path: pretrained_weights/da3_giant.safetensors
+  mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
+data:
+  data_path: src/data/dl3dv_test.txt
+  json_path: src/data/dl3dv_start_0_distance_150_ctx_24v_tgt_8v.json
+  input_frame_select_type: json_context
+  target_frame_select_type: json_target
+  num_input_frames: 24
+  num_target_frames: 8
+  shuffle_input_prob: 0.0
+  reverse_input_prob: 0.0
+  resize_h: 224
+  resize_w: 224
+  square_crop: true
+  scene_scale: 1.0
+inference:
+  if_inference: true
+  dataset_name: src.datasets.dataset.InferenceDataset
+  amp_dtype: bf16
+  use_amp: true
+  api_key_path: src/configs/api_keys.yaml
+  batch_size_per_gpu: 1
+  num_threads: 8
+  num_workers: 4
+  prefetch_factor: 4
+  use_tf32: true
+  ckpt_path: pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt
+  run: finesplat_224
+  camera_mode: pred_pose_pred_intr
+  pose_optimization: true
+  compute_metrics: true
+  visualize: false
+  visualize_first_n: 3
+  refiner:
+    ckpt_path: pretrained_weights/finesplat/e2e_224_step10k_ema.pt
+    use_ema: true
+    full_state: true
+  prune_mode: contribution
+  prune_keep_per_view:
+  - 10368
+  epa_steps: 200
+  eval_iters:
+  - 0
+  - 4
+refiner_model:
+  num_iters: 4
+  refiner:
+    patch_size: 8
+  error:
+    image_embed: mvp_s1
+    stride: 4

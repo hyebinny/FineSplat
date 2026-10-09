@@ -1,0 +1,78 @@
+model:
+  class_name: src.model.model.TwoExpertModel
+  dim1: 256
+  dim2: 512
+  dim3: 1024
+  num_register_tokens: 4
+  head_dim: 64
+  inter_multi: 4
+  qk_norm: true
+  stage1_nlayer: 2
+  stage2_nlayer: 4
+  stage3_nlayer: 8
+  group_size: 2
+  patch_size: 4
+  gaussians_per_patch: 4 # 2x2 sub-grid per 4x4 patch; stride 2 px
+  in_channels: 12
+
+  gaussians:
+    sh_degree: 1
+    opacity_degree: 0 
+    near_plane: 0.01
+    far_plane: 1000000.0
+    scale_bias: -5.5137 # -6.9 + ln(4); must match train_update_dynamic.yaml
+    scale_max: -1.2
+    opacity_bias: 4.0 # must match train_update_dynamic.yaml
+    align_to_pixel: true
+    max_dist: 500.0
+
+  # DA3-Giant
+  da_model_name: da3-giant
+  da_model_weights_path: pretrained_weights/da3_giant.safetensors
+  mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
+
+
+data:
+  data_path: src/data/dl3dv_test.txt
+
+  # Context/target view configurations from YoNoSplat (pick one):
+  #   distance=50, 6 ctx / 8 tgt: src/data/dl3dv_start_0_distance_50_ctx_6v_tgt_8v.json
+  #   distance=100, 12 ctx / 8 tgt: src/data/dl3dv_start_0_distance_100_ctx_12v_tgt_8v.json
+  #   distance=150, 24 ctx / 8 tgt: src/data/dl3dv_start_0_distance_150_ctx_24v_tgt_8v.json
+
+  # FIXME
+  json_path: src/data/dl3dv_start_0_distance_50_ctx_6v_tgt_8v.json
+  # json_path: src/data/dl3dv_start_0_distance_100_ctx_12v_tgt_8v.json
+  # json_path: src/data/dl3dv_start_0_distance_150_ctx_24v_tgt_8v.json
+
+  input_frame_select_type: json_context
+  target_frame_select_type: json_target
+  num_input_frames: 6 # FIXME: must match the ctx count in json_path
+  num_target_frames: 8
+  shuffle_input_prob: 0.0
+  reverse_input_prob: 0.0
+  resize_h: 224
+  resize_w: 224
+  square_crop: true
+  scene_scale: 1.0
+
+inference:
+  if_inference: true
+  dataset_name: src.datasets.dataset.InferenceDataset
+  amp_dtype: bf16
+  use_amp: true
+  api_key_path: src/configs/api_keys.yaml
+  batch_size_per_gpu: 1
+  num_threads: 8
+  num_workers: 4
+  prefetch_factor: 4
+  use_tf32: true
+
+  # FIXME
+  ckpt_path: pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt
+  out_dir: experiments/inference/2xplat_patchwise_offset_dl3dv_lr_novdo/gt_pose_gt_intr/i6t8
+
+  camera_mode: gt_pose_gt_intr # FIXME: gt_pose_gt_intr | pred_pose_gt_intr | pred_pose_pred_intr
+  pose_optimization: false # FIXME
+  compute_metrics: true
+  visualize: false # FIXME
