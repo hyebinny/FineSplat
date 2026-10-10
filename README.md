@@ -1,7 +1,7 @@
 <div align="center">
 <h1>FineSplat: Fine Patches, Local Groups, Detailed Splats</h1>
 
-[Hyebin Kim](https://github.com/hyebinny)\*, [Hwasik Jeong](https://github.com/HwasikJeong)\*, Joonhyuk Park, [Gyeongjin Kang](https://gynjn.github.io/info/), Jungwoo Kim, Younghyun Kim, [Eunbyung Park](https://silverbottlep.github.io/index.html)
+[Hyebin Kim](https://github.com/hyebinny)\*, [Hwasik Jeong](https://github.com/HwasikJeong)\*, [Joonhyuk Park](https://github.com/joonh-park), [Gyeongjin Kang](https://gynjn.github.io/info/), [Jungwoo Kim](https://github.com/jungcow), [Younghyun Kim](https://github.com/yhyun225), [Eunbyung Park](https://silverbottlep.github.io/)
 
 Yonsei University
 
