@@ -1,13 +1,13 @@
-"""Train FineSplat: Stage 2 on a frozen Stage 1, or the whole model end-to-end.
-
-Default (``stage2.e2e: false``): Stage 1 (2Xplat) and the ResNet-18 error backbone stay
-frozen; only ErrorMapEncoder's projections, ErrorLifter and the Stage-2 network are
-optimized, against a photometric loss on the held-out target views. The Stage-2 head is
-zero-initialised, so step 0 reproduces Stage 1 exactly - the first logged loss is the
-baseline. With ``stage2.e2e: true`` Stage 1 is unfrozen and trained jointly.
+"""Train FineSplat: Stage 2 on a frozen Stage 1 (default), or end-to-end with ``stage2.e2e: true``.
 
     torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/finesplat/train/stage2_224.yaml
     torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/finesplat/train/e2e_224.yaml
+
+Writes <out_dir>/finesplat_last.pt, finesplat_best.pt, finesplat_step_<n>.pt and watchlist/.
+Config keys: stage2.arch, stage2.e2e; train.lr, train.stage2_lr, train.num_steps,
+train.warmup_steps, train.lr_schedule, train.resume, train.init_stage2_ckpt,
+train.loss_views, train.unposed_ratio, train.ema, train.photometric,
+train.perceptual_weight, train.lpips_weight, train.grad_clip, train.ckpt_every, train.wandb.
 """
 
 import os
@@ -38,7 +38,7 @@ from src.utils.watchlist import build_watchlists
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
-    """Recursive dict merge. init_config() hands back an edict, which OmegaConf.merge rejects."""
+    """Recursive dict merge (init_config() returns edicts, which OmegaConf.merge rejects)."""
     out = {k: (_deep_merge(v, {}) if isinstance(v, dict) else v) for k, v in base.items()}
     for k, v in (over or {}).items():
         out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
@@ -46,16 +46,9 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 
 def build_finesplat(base, config):
-    """Instantiate the model named by ``stage2.arch``, merged onto its own defaults.
-
-    "ptv3" is FineSplat's Stage 2 in src.model.stage2; "resplat" is the recurrent
-    kNN-attention port in src.model.resplat_refiner (not shipped). They take different
-    config trees, so each merges against its own module-level defaults.
-    """
+    """Instantiate the model named by ``stage2.arch``, merged onto that module's defaults."""
     raw = config.get("stage2", {})
-    # init_config() hands back edicts, but callers that pass OmegaConf straight through would
-    # otherwise reach _deep_merge as DictConfig, which fails isinstance(dict) and silently
-    # replaces a whole defaults subtree instead of merging into it.
+    # a DictConfig fails isinstance(dict) in _deep_merge and would replace whole subtrees
     if not isinstance(raw, dict):
         raw = OmegaConf.to_container(raw, resolve=True)
     conf = dict(raw)
@@ -72,11 +65,7 @@ def build_finesplat(base, config):
 
 
 def init_wandb(config, resume_id: str | None = None):
-    """Start a W&B run from the repo's api_keys.yaml. Returns the wandb module, or None.
-
-    init_wandb_and_backup() is not reused: it also mirrors the source tree and dumps the
-    config, and demands a handful of `training.*` keys this run has no other use for.
-    """
+    """Start a W&B run from the repo's api_keys.yaml. Returns the wandb module, or None."""
     conf = config.train.get("wandb", None)
     if not conf or not conf.get("project", None):
         return None
@@ -100,8 +89,8 @@ def init_wandb(config, resume_id: str | None = None):
     return wandb
 
 
-_PANEL_PAD = 8      # gap between tiles
-_PANEL_LABEL = 16   # label strip above each tile
+_PANEL_PAD = 8
+_PANEL_LABEL = 16
 
 
 def _panel_font():
@@ -115,11 +104,7 @@ def _panel_font():
 
 
 def log_images(wandb, out, target_data, core, step: int, max_views: int | None = None) -> None:
-    """Log GT | Stage 1 | Stage 2 for the current batch's first scene, each tile
-    labelled with its (psnr, ssim, lpips) against the GT view above it.
-
-    Defaults to every target view, i.e. exactly the views the loss is computed on.
-    """
+    """Log GT | Stage 1 | Stage 2 tiles for the batch's first scene, labelled with (psnr, ssim, lpips)."""
     from PIL import Image, ImageDraw
 
     base_rgb = core.render_baseline_targets(out["gaussians_base"], out["cameras"])
@@ -164,8 +149,7 @@ def log_images(wandb, out, target_data, core, step: int, max_views: int | None =
 
 
 def stage2_state_dict(core) -> dict:
-    """Trainable weights only. The frozen Stage 1 lives under `model.` and would otherwise
-    turn every checkpoint into a 5.7 GB copy of a checkpoint we already have on disk."""
+    """Trainable weights only; the frozen Stage 1 under `model.` is already on disk."""
     return {k: v for k, v in core.state_dict().items() if not k.startswith("model.")}
 
 
@@ -182,33 +166,14 @@ def setup_distributed() -> tuple[int, int, int]:
 
 def lr_at(step: int, base_lr: float, warmup: float, total: int,
           schedule: str = "constant", decay_ratio: float = 0.2) -> float:
-    """Linear warm-up, then either cosine decay to zero (2Xplat's schedule) or a flat rate.
-
-    ``warmup`` is a step count, or a fraction of ``total`` when below 1 - ReSplat expresses
-    the same thing as ``warm_up_ratio: 0.01`` on its OneCycleLR. 2Xplat itself warms up over
-    0 steps, but it is fine-tuning a trained model at lr 2e-5, while Stage 2 starts
-    from a zero-initialised head at a much larger lr and takes a visible hit on its first
-    update without one.
-
-    The cosine branch is ``get_cosine_schedule_with_warmup`` written out, which is what
-    2Xplat's own training uses (``scheduler_type`` defaults to cosine in
-    src/commands/train.py).
-
-    ``constant`` exists for runs whose step budget is not yet fixed: cosine reaches zero at
-    ``total``, so such a run cannot be extended, only restarted.
-    """
+    """Linear warm-up (a fraction of ``total`` when < 1), then constant, cosine-to-zero or warmup-stable-decay."""
     warmup = warmup * total if 0 < warmup < 1 else warmup
     if warmup > 0 and step < warmup:
-        # min() guards the case where the ratio lands below one step: dividing by a
-        # fractional warm-up would otherwise return a multiple of the peak lr.
         return base_lr * min(1.0, (step + 1) / warmup)
     if schedule == "constant":
         return base_lr
     if schedule == "wsd":
-        # Warmup-stable-decay: hold the peak, then anneal over the last decay_ratio of the
-        # budget. Cosine reaches zero exactly at `total`, so a cosine run can only be
-        # restarted, never extended; a wsd run can be carried further by moving `total`,
-        # because everything before the decay window is flat.
+        # hold the peak, then cosine-anneal over the last decay_ratio of the budget
         decay_steps = max(1.0, decay_ratio * total)
         decay_start = total - decay_steps
         if step < decay_start:
@@ -234,24 +199,18 @@ def main() -> None:
     model, stage2_conf = build_finesplat(base, config)
     model = model.to(device)
     if world > 1:
-        # e2e unfreezes the whole base; DA3 keeps a few heads that never see the loss, so
-        # DDP has to tolerate unused parameters there. Frozen runs keep the fast path.
+        # e2e unfreezes Stage 1, whose DA3 has heads the loss never reaches
         model = DistributedDataParallel(
             model, device_ids=[local_rank],
             find_unused_parameters=bool(config.train.get("ddp_find_unused", model.e2e)),
         )
     core = model.module if world > 1 else model
 
-    # e2e needs real train mode: the DA3 grad-checkpoint gate and the single-joint-pass
-    # branch both read module.training. Frozen runs keep everything in eval as before
-    # (Stage 2's own modules have no dropout/BN, so train mode never mattered there).
+    # e2e needs train mode (DA3's grad-checkpoint gate reads it); Stage 2 has no dropout/BN
     if core.e2e:
         core.train()
 
-    # EMA of the full model (e2e default on): 2Xplat's own training keeps one and ships the
-    # EMA weights, and without it the raw unposed e2e run degrades on held-out scenes while
-    # its train loss keeps falling. Rank 0 only - DDP keeps the replicas identical, so one
-    # copy suffices; ~5.6 GB extra on GPU 0.
+    # train.ema (default on for e2e): EMA on rank 0 only, since DDP keeps the replicas identical
     use_ema = bool(config.train.get("ema", core.e2e))
     ema = None
     if use_ema and is_main:
@@ -261,7 +220,6 @@ def main() -> None:
     ema_decay = float(config.train.get("ema_decay", 0.999))
 
     params = [p for p in model.parameters() if p.requires_grad]
-    # Resolved before W&B starts so a resumed training continues the same run.
     out_dir = str(train_out_dir(config))
     os.makedirs(out_dir, exist_ok=True)
     resume = config.train.get("resume", False)
@@ -279,15 +237,12 @@ def main() -> None:
     wandb_id = wandb.run.id if wandb is not None else None
     if is_main:
         print(f"trainable params: {sum(p.numel() for p in params) / 1e6:.2f}M", flush=True)
-    # 2Xplat's own optimizer (src/utils/training_utils.py): AdamW with weight decay applied
-    # only to multi-dimensional parameters, so biases and LayerNorm weights are left alone.
+    # AdamW with weight decay on multi-dimensional parameters only (src/utils/training_utils.py)
     opt, _, _ = create_optimizer(
         core, config.train.get("weight_decay", 0.05), config.train.lr,
         (config.train.get("beta1", 0.9), config.train.get("beta2", 0.95)),
     )
-    # train.stage2_lr: a separate peak lr for everything outside the base (core.model),
-    # e.g. a from-scratch Stage 2 trained jointly with a fine-tuned Stage 1. Every group
-    # follows the same schedule, scaled to its own peak_lr.
+    # train.stage2_lr: separate peak lr for everything outside Stage 1; same schedule per group
     stage2_lr = config.train.get("stage2_lr", None)
     if stage2_lr is not None:
         ref_ids = {id(p) for n, p in core.named_parameters() if not n.startswith("model.")}
@@ -304,30 +259,15 @@ def main() -> None:
             print(f"stage2_lr {stage2_lr} on {n_ref / 1e6:.2f}M params, base lr {config.train.lr} "
                   f"on the rest", flush=True)
 
-    # The eval dataset reads fixed context/target indices from the benchmark json, which
-    # only covers the 140 test scenes. Training uses the repo's own loader, which samples
-    # views itself (input uniform / target random) and needs no json.
     loader = get_train_data_loader(config, num_workers=config.train.get("num_workers", 4))
 
-    # 2Xplat's own recipe (src/model/loss.py, configs/train_stage*.yaml): 1.0 * MSE +
-    # 0.2 * Chen-Koltun VGG19 perceptual, LPIPS off. Stage 2 follows it so that the
-    # residual is trained against the same objective the frozen base was. lpips_weight > 0
-    # adds LPIPS(VGG) on top; photometric: "l1" restores ZipSplat's original term.
+    # Stage 1's objective: photometric + perceptual_weight * VGG perceptual; lpips_weight > 0 adds LPIPS
     photometric = config.train.get("photometric", "mse")
     assert photometric in ("mse", "l1"), photometric
     perceptual_weight = config.train.get("perceptual_weight", 0.2)
     lpips_weight = config.train.get("lpips_weight", 0.0)
-    # Which views the loss reads, train.loss_views: {target: N, context: M}. target says
-    # how many of the batch's target views enter each step (absent = all of them); context
-    # says how many context views are sampled in alongside (0 = none, the default). The
-    # Stage 2 reads its context rendering error but is scored on held-out views, so nothing
-    # in the target-only objective says to close that error - test-time optimisation closes
-    # it and gains +1.76 PSNR held-out against Stage 2's +0.75, which says the signal
-    # transfers. Both sets are pooled into one photometric + perceptual term, so their
-    # relative weight is exactly their view-count ratio.
-    # context also takes a list aligned with training.num_views - [3, 3, 3, 1] against
-    # buckets [6, 12, 24, 32] - since the affordable quota shrinks as views grow; it is
-    # handed to the model as {view_count: quota}.
+    # train.loss_views: {target: N, context: M} - how many target (absent = all) and context
+    # (default 0) views the loss reads; context may be a list aligned with training.num_views.
     loss_views = config.train.get("loss_views", None) or {}
     loss_target_views = loss_views.get("target", None)
     ctx_views = loss_views.get("context", 0) or 0
@@ -335,11 +275,7 @@ def main() -> None:
         ctx_views = {int(n): int(c)
                      for n, c in zip(config.training.num_views, ctx_views)}
     core.context_loss_views = ctx_views
-    # posed:unposed input mix. With this probability a step selects DA3's cameras
-    # (pred_pose_pred_intr) instead of the config's camera_mode - DA3 runs either way, so
-    # the flip only changes which cameras _select_cameras returns. Each rank draws its own
-    # coin, so a step's effective ratio varies but its expectation is exact. 0 keeps the
-    # run fully posed.
+    # train.unposed_ratio: probability (per rank, per step) of using DA3's predicted cameras
     unposed_ratio = float(config.train.get("unposed_ratio", 0.0))
     posed_camera_mode = core.model.geometry_expert.camera_mode
     perceptual_fn = None
@@ -351,8 +287,6 @@ def main() -> None:
     num_steps = config.train.num_steps
     warmup = config.train.get("warmup_steps", 200)
     lr_schedule = config.train.get("lr_schedule", "constant")
-    # null/0 disables clipping. clip_grad_norm_ still reports the norm at max_norm=inf,
-    # because the scale factor is clamped to 1, so train/grad_norm stays comparable.
     clip = config.train.get("grad_clip", 0.5)
     clip = float("inf") if not clip else clip
     eval_every = config.train.get("ckpt_every", 2500)
@@ -364,8 +298,6 @@ def main() -> None:
     def run_watchlist(step: int) -> dict:
         """Evaluate the watchlist, log it, and refresh finesplat_last/finesplat_best."""
         nonlocal best_psnr
-        # The pose mix flips the base's camera mode per training step; the watchlist always
-        # measures under the config's own mode.
         core.model.geometry_expert.camera_mode = posed_camera_mode
         wl_model = ema if ema is not None else core
         wl_model.model.geometry_expert.camera_mode = posed_camera_mode
@@ -375,10 +307,7 @@ def main() -> None:
               flush=True)
         if wandb is not None:
             wandb.log(wl, step=step)
-        # Everything needed to continue: the moments matter as much as the weights, and
-        # the epoch plus the batch index inside it put the sampler back where it was.
-        # e2e checkpoints must carry the (no longer frozen) Stage 1 as well, so they store
-        # the full state dict; frozen runs keep the small Stage-2-only dict.
+        # e2e checkpoints carry the unfrozen Stage 1 (full state dict); frozen runs store Stage 2 only
         state = core.state_dict() if core.e2e else stage2_state_dict(core)
         ckpt = {"step": step, "epoch": epoch_now[0], "batch_in_epoch": batch_in_epoch[0],
                 "state": state, "optimizer": opt.state_dict(),
@@ -387,14 +316,9 @@ def main() -> None:
         if ema is not None:
             ckpt["ema"] = ema.state_dict()
         torch.save(ckpt, os.path.join(out_dir, "finesplat_last.pt"))
-        # finesplat_last.pt is overwritten every time, so also keep one file per evaluation:
-        # a run can then be read back at any checkpointed step, not only at its end. These
-        # are 170 MB each, so a 10k run at ckpt_every 1000 leaves 1.7 GB behind - prune by
-        # hand once the run has been looked at.
         if config.train.get("keep_step_checkpoints", True):
             torch.save(ckpt, os.path.join(out_dir, f"finesplat_step_{step:06d}.pt"))
-        # Selected on the train split so no test scene ever steers which weights are kept.
-        # Averaged over the logged view counts rather than read off 6v alone.
+        # best is selected on the train split, summed over the logged view counts
         train_psnr = sum(v for k, v in wl.items()
                          if k.startswith("watchlist/train") and k.endswith("_psnr"))
         if train_psnr > best_psnr:
@@ -403,9 +327,8 @@ def main() -> None:
             print(f"  new best (watchlist train psnr sum {best_psnr:.4f})", flush=True)
         return wl
 
-    # train.init_stage2_ckpt: warm-start the Stage-2 weights from a finished run (weights
-    # only - step, optimizer moments and schedule start fresh). A resume checkpoint in
-    # out_dir takes precedence, so an interrupted warm-started run still picks itself up.
+    # train.init_stage2_ckpt: warm-start Stage-2 weights only (step, optimizer and schedule
+    # start fresh); a resume checkpoint in out_dir takes precedence.
     init_ckpt = config.train.get("init_stage2_ckpt", None)
     if init_ckpt and prev_ckpt is None:
         w = torch.load(str(init_ckpt), map_location="cpu", weights_only=False)
@@ -414,7 +337,7 @@ def main() -> None:
         if is_main:
             print(f"initialised Stage-2 weights from {init_ckpt} (step {w.get('step')})", flush=True)
 
-    # resume: true picks up out_dir/finesplat_last.pt; a path resumes from that file.
+    # train.resume: true picks up out_dir/finesplat_last.pt; a path resumes from that file
     start_step, start_epoch, skip_batches = 0, 0, 0
     if prev_ckpt is not None:
         missing = core.load_state_dict(checkpoint_state(prev_ckpt), strict=False).missing_keys
@@ -443,15 +366,10 @@ def main() -> None:
         for batch_idx, batch in enumerate(loader):
             if step >= num_steps:
                 break
-            # On the first resumed epoch, replay the sampler up to where it stopped. Only
-            # the loader runs; nothing reaches the GPU.
             if epoch == start_epoch and batch_idx < skip_batches:
                 continue
             batch_in_epoch[0] = batch_idx
-            # Watchlist evaluation and checkpointing run before this step's update, so the
-            # numbers at step N reflect exactly N updates. Step 0 is therefore the frozen
-            # 2Xplat reference point that every later value is read against - which only
-            # holds if nothing has been optimized yet, hence the placement.
+            # evaluated before the update, so step N reflects exactly N updates (step 0 = Stage 1)
             if is_main and step % eval_every == 0:
                 run_watchlist(step)
 
@@ -468,14 +386,10 @@ def main() -> None:
                 out = model(input_data, target_data)
             gt = target_data["image"].float()
             flat_g = gt.flatten(0, 1)
-            # Every Stage-2 step is supervised, not just the last: an auxiliary term per
-            # step is what makes each one improve the state it receives. Averaged so the
-            # loss scale does not depend on num_steps.
+            # every Stage-2 step is supervised; averaged over steps so the loss scale is
+            # independent of num_steps
             renders = out["renders"]
             ctx_renders = out.get("context_renders") or []
-            # The pool of views the loss reads: a sample of the targets (or all of them)
-            # plus this step's sampled context views. The context renders come out of the
-            # model, one per step, because only there is the render differentiable.
             t_idx = None
             if loss_target_views and loss_target_views < gt.shape[1]:
                 t_idx = torch.randperm(gt.shape[1], device=gt.device)[:loss_target_views]
@@ -501,9 +415,7 @@ def main() -> None:
                 perc_sum = pci if perc_sum is None else perc_sum + pci
                 lp_sum = lpi if lp_sum is None else lp_sum + lpi
             n = len(renders)
-            # e2e: the unfrozen Stage 1's own prediction (step 0) carries the same objective,
-            # so Stage 1 keeps being supervised directly and not only through the Stage-2
-            # steps. Targets only - there is no per-step context render for step 0.
+            # e2e: Stage 1's own prediction (step 0) is supervised directly, targets only
             r0 = out.get("render0")
             if r0 is not None:
                 r0l = r0.float().clamp(0, 1)
@@ -544,8 +456,6 @@ def main() -> None:
                       f"gnorm {float(grad_norm):.3f}  lr {opt.param_groups[0]['lr']:.2e}  "
                       f"{sec_per_step:.2f}s/step", flush=True)
                 if wandb is not None:
-                    # train/* are averaged over the Stage-2 steps; pass/* breaks them out
-                    # so it is visible whether each step actually improves on the one before.
                     log = {
                         "train/loss": loss.detach().item(),
                         f"train/{photometric}": photo.detach().item(),
@@ -572,8 +482,7 @@ def main() -> None:
             step += 1
 
     if is_main:
-        # The in-loop schedule fires on step % eval_every, and the loop exits at
-        # num_steps - 1, so the final weights would otherwise never be measured.
+        # the loop exits before evaluating step num_steps, so measure the final weights here
         run_watchlist(step)
         print("done", flush=True)
         if wandb is not None:

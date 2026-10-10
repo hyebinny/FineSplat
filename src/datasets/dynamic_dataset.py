@@ -1,3 +1,6 @@
+"""Training dataset over per-scene camera jsons, sampling input/target frames at a
+per-batch resolution and view count.
+"""
 import os
 import json
 import torch
@@ -17,11 +20,7 @@ from src.utils.dataset_utils import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Frame distance bounds (training-specific, keyed by input view count)
-# ---------------------------------------------------------------------------
-
-# Empirically determined bounds that ensure sufficient visual overlap per view count.
+# Frame-window (min_dist, max_dist) per input view count, chosen for sufficient overlap.
 _FRAME_DIST_BY_NUM_INPUTS: dict[int, tuple[int, int]] = {
     2:  (30,  50),
     6:  (30,  50),
@@ -32,17 +31,7 @@ _FRAME_DIST_BY_NUM_INPUTS: dict[int, tuple[int, int]] = {
 
 
 def _frame_dist_bounds(num_input_views: int) -> tuple[int, int]:
-    """Return (min_dist, max_dist) frame window bounds for the given input view count.
-
-    Args:
-        num_input_views: The number of input views to be sampled.
-
-    Returns:
-        A (min_dist, max_dist) tuple of frame index distance bounds.
-
-    Raises:
-        NotImplementedError: If no bounds are defined for num_input_views.
-    """
+    """(min_dist, max_dist) frame window bounds for the given input view count."""
     if num_input_views not in _FRAME_DIST_BY_NUM_INPUTS:
         raise NotImplementedError(
             f"No frame distance bounds defined for num_input_views={num_input_views}. "
@@ -51,18 +40,10 @@ def _frame_dist_bounds(num_input_views: int) -> tuple[int, int]:
     return _FRAME_DIST_BY_NUM_INPUTS[num_input_views]
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
 class DynamicInputDataset(BaseDataset):
     """Training dataset that supports dynamic multi-resolution batching."""
 
     def __init__(self, config):
-        """
-        Args:
-            config: OmegaConf config containing training and data settings.
-        """
         super().__init__(config)
         self.config = config
         self.evaluation = config.get("evaluation", False)
@@ -81,19 +62,7 @@ class DynamicInputDataset(BaseDataset):
         target_h: int,
         target_w: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Load images and camera data for a list of frames, applying configured resize/crop.
-
-        Args:
-            frames: List of frame dicts from the scene JSON, each containing image path
-                and camera parameters.
-            image_base_dir: Directory used to resolve relative image paths.
-            target_h: Target image height after resizing.
-            target_w: Target image width after resizing.
-
-        Returns:
-            A tuple of (images, intrinsics, c2ws) where images is (N, C, H, W),
-            intrinsics is (N, 4), and c2ws is (N, 4, 4).
-        """
+        """Load and resize/crop frames. Returns images (N,C,H,W), intrinsics (N,4) fxfycxcy, c2ws (N,4,4)."""
         square_crop = self.config.data.square_crop
         resize_mode = self.config.data.get("resize_mode", "lanczos")
 
@@ -117,21 +86,7 @@ class DynamicInputDataset(BaseDataset):
         num_views_to_input: int,
         num_views_to_target: int,
     ) -> dict:
-        """Load a scene and select input/target frames at the specified resolution.
-
-        Args:
-            sampled_idx: Index into data_path for the scene to load.
-            resolution: (height, width) tuple for image loading.
-            num_views_to_input: Number of input frames to select.
-            num_views_to_target: Number of target frames to select.
-
-        Returns:
-            A dict with separate input/target image, intrinsic, pose, and index tensors,
-            plus the scene_name string.
-
-        Raises:
-            ValueError: If poses contain NaN or Inf after normalization.
-        """
+        """Load a scene and select input/target frames at ``resolution`` (height, width)."""
         scene_path = self.data_path[sampled_idx]
         with open(scene_path, 'r') as f:
             data_json = json.load(f)

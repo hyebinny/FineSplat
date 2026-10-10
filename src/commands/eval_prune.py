@@ -1,30 +1,12 @@
-"""Benchmark FineSplat's final Gaussians after pruning.
-
-Each scene runs one forward; the last step's Gaussians are then pruned, rendered at the
-targets and scored, once per pruning level:
-
-  prune_mode "contribution" (the paper's): keep the ``prune_keep_per_view`` * V Gaussians
-      with the highest contribution score - the mean over the context views of the
-      Gaussian's total compositing weight sum_pixels(T_i * alpha_i). ZipSplat's count
-      (10,368 per view) is filed as <out_dir>/step4_prune/, other counts as
-      step4_contrib<k>pv/.
-  prune_mode "radsplat": same top-k selection on RadSplat's importance (max blending
-      weight over every ray) -> step4_radsplat<k>pv/.
-  prune_mode "opacity": sigmoid(SH_C0 * coeff) >= tau for every tau in ``prune_taus``
-      -> step4_prune<tau>/; tau 0 keeps everything and writes to step4/.
-
-Cameras follow the eval config: without ``inference.pose_optimization`` the targets are
-rendered at the config's cameras; with it, EPA re-aligns the target poses against each
-pruned set, since the pruned 3DGS is the model being evaluated.
-
-    <out_dir>/step4_prune/000001_<scene>/{metrics.json, gs_count.json}
-    <out_dir>/step4_prune/summary.csv
-
-``inference.scene_range`` [lo, hi) runs one shard and leaves the summaries to a final
-pass. ``inference.vis_save: {root, subdir, tag}`` also writes each render to
-<root>/<tag>_<level>/<subdir>/<scene>/<frame:03d>.png.
+"""Benchmark FineSplat's last-step Gaussians after pruning, once per pruning level (EPA with inference.pose_optimization).
 
     python -m src.commands.eval_prune <eval_config> [out_dir] [inference.key=value ...]
+    <out_dir>/step4_prune/000001_<scene>/{metrics.json, gs_count.json}, <out_dir>/step4_prune/summary.csv
+inference.prune_mode: "contribution" keeps the top prune_keep_per_view * V by mean compositing weight over
+    the context views (10368/view -> step4_prune/, else step4_contrib<k>pv/); "radsplat" keeps the top-k by
+    max blending weight (step4_radsplat<k>pv/); "opacity" thresholds at each tau in prune_taus (step4_prune<tau>/).
+inference.scene_range: [lo, hi) shard; summaries are left to a final pass.
+inference.vis_save: {root, subdir, tag} writes renders to <root>/<tag>_<level>/<subdir>/<scene>/<frame:03d>.png.
 """
 import json
 import os
@@ -60,9 +42,7 @@ def opacity_keep(g, tau: float):
 
 
 def contribution_scores(g, c2w, fxfycxcy, w: int, h: int, model, reduce: str = "mean"):
-    """Mean (or max) over the given views of each Gaussian's total compositing weight
-    sum_pixels(T_i * alpha_i), read off as d(sum(render)) / d(color_i) with unit scalar
-    colours so appearance drops out."""
+    """Mean (or max) over views of sum_pixels(T_i * alpha_i), read off as d(sum(render)) / d(color_i)."""
     with torch.inference_mode(False), torch.enable_grad(), torch.autocast("cuda", enabled=False):
         xyz = g.xyz[0].detach().float()
         rotation = F.normalize(g.rotation[0].detach().float(), dim=-1)
@@ -85,13 +65,7 @@ def contribution_scores(g, c2w, fxfycxcy, w: int, h: int, model, reduce: str = "
 
 def radsplat_scores(g, c2w, fxfycxcy, w: int, h: int, model, batch_per_iter: int = 100,
                     return_alpha: bool = False):
-    """RadSplat importance (Niemeyer et al. 2024): max over every ray of every given view of
-    the Gaussian's blending weight alpha_i * T_i, so in [0, 1]. Unlike the summed score, a
-    small Gaussian that dominates a single pixel scores high.
-
-    gsplat's fused rasterizer does not expose per-intersection weights, so the
-    intersections are enumerated front to back with rasterize_to_indices_in_range (as in
-    gsplat's _torch_impl._rasterize_to_pixels) and alpha / T are recomputed per pair."""
+    """RadSplat importance: max blending weight alpha_i * T_i over every ray, enumerated via rasterize_to_indices_in_range."""
     with torch.autocast("cuda", enabled=False):
         xyz = g.xyz[0].detach().float()
         rotation = F.normalize(g.rotation[0].detach().float(), dim=-1)
@@ -131,11 +105,10 @@ def radsplat_scores(g, c2w, fxfycxcy, w: int, h: int, model, batch_per_iter: int
                 first = torch.ones_like(pid, dtype=torch.bool)
                 first[1:] = pid[1:] != pid[:-1]
                 start = torch.where(first, torch.arange(len(pid), device=pid.device), 0).cummax(0).values
-                excl = cum - log_t - (cum[start] - log_t[start])  # sum of log(1 - alpha) in front, this batch
+                excl = cum - log_t - (cum[start] - log_t[start])
                 weight = alpha * trans.view(-1)[pid] * torch.exp(excl)
                 scores.scatter_reduce_(0, gid, weight, reduce="amax")
                 trans.view(-1).mul_(torch.exp(torch.zeros(h * w, device=pid.device).index_add_(0, pid, log_t)))
-    # return_alpha (last view's accumulated alpha, 1 - T) is only for the self-check below
     return (scores, 1 - trans[0]) if return_alpha else scores
 
 
@@ -153,9 +126,6 @@ def main():
     model = load_finesplat(config, base, device)
     model.keep_step_gaussians = True
 
-    # prune_mode "opacity": prune_taus thresholds. "contribution" / "radsplat": keep the top
-    # prune_keep_per_view * V Gaussians by contribution_scores / radsplat_scores over the
-    # context views.
     mode = config.inference.get("prune_mode", "opacity")
     last = f"step{config.stage2.num_steps}"
     if mode == "opacity":
@@ -166,10 +136,8 @@ def main():
         name = lambda k: f"{last}_radsplat{k}pv"
     elif mode == "contribution":
         levels = [int(k) for k in config.inference.prune_keep_per_view]
-        # contrib_reduce: how the per-view scores are pooled over the context views
         reduce = config.inference.get("contrib_reduce", "mean")
         assert reduce in ("mean", "max"), reduce
-        # ZipSplat's count (10,368 per view) is the paper's pruning, filed as plain "prune"
         tag = lambda k: "prune" if k == 10368 else f"contrib{k}pv"
         name = lambda k: f"{last}_{tag(k)}" + ("" if reduce == "mean" else f"_{reduce}")
     else:
@@ -242,7 +210,7 @@ def main():
 
 
 def _selfcheck():
-    """Random scene: the enumerated compositing must reproduce gsplat's own alpha map."""
+    """The enumerated compositing must reproduce gsplat's own alpha map on a random scene."""
     torch.manual_seed(0)
     n, w, h = 20000, 128, 128
     g = edict(xyz=torch.randn(1, n, 3, device="cuda") * 0.5 + torch.tensor([0, 0, 3.0], device="cuda"),

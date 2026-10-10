@@ -14,12 +14,9 @@ import torch.nn as nn
 import spconv.pytorch as spconv
 from .torch_scatter_compat import segment_csr
 
-# Local edit: xCPE is the only spconv op PTv3 uses, and its default MaskImplicitGemm
-# path has hung on us twice after ~10k training iterations (both processes stuck in
-# spconv.ops.implicit_gemm with the GPU idle, unrecoverable). We therefore default to
-# the plain gather/scatter kernels (PTV3_SPCONV_ALGO=default restores spconv's choice)
-# and drop xCPE altogether (PTV3_DISABLE_CPE=0 re-enables it), which removes spconv
-# from the graph completely. All shipped Stage-2 checkpoints were trained without xCPE.
+# Local edit: xCPE (PTv3's only spconv op) is disabled by default and spconv runs its native
+# algo; PTV3_DISABLE_CPE=0 / PTV3_SPCONV_ALGO=default restore upstream behaviour.
+# Shipped Stage-2 checkpoints were trained without xCPE.
 _SPCONV_ALGO = (
     None if os.getenv("PTV3_SPCONV_ALGO", "native") == "default" else spconv.ConvAlgo.Native
 )

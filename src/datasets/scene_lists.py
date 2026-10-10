@@ -1,12 +1,7 @@
-"""Resolving a config's scene list to per-scene camera json paths.
+"""Resolve a config's scene list to per-scene camera json paths. Two forms under ``config.data``:
 
-Two forms are accepted under ``config.data``:
-
-  root / split / scene_list   the dataset root, the split folder under it and a text file
-                              of scene ids, one per line (``src/data/DL3DV/test_scenes.txt``);
-                              scene i lives at <root>/<split>/<id>/<scene_file>
-  data_path                   a text file listing the camera json of every scene directly,
-                              absolute or relative to the list file (the original 2Xplat form)
+  root / split / scene_list   text file of scene ids, one per line; scene lives at <root>/<split>/<id>/<scene_file>
+  data_path                   text file of camera json paths, absolute or relative to the list file
 """
 import os
 

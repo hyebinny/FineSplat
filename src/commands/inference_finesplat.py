@@ -1,19 +1,7 @@
-"""Evaluate FineSplat (Stage 1 + Stage 2) on the DL3DV benchmark protocol.
-
-Same 140-scene protocol, metrics and outputs as ``src.commands.inference``, so the
-numbers drop straight into the same table. Per scene:
-
-    Stage 1 -> tokens -> [context render -> error map -> lifted error
-      -> Stage 2 -> token residual -> Gaussians] x num_steps
-      -> render target views, or EPA          (inference.pose_optimization)
-      -> metrics / renderings
-
-``inference.checkpoint.ckpt_path: ""`` leaves the Stage-2 head zero-initialised, so the
-run reproduces Stage 1 alone through Stage 2's own fp32 decode path. That is the control
-this evaluation should be read against - not the bf16 numbers from ``inference.py``, which
-decode the Gaussians in a different precision.
-
+"""Evaluate FineSplat (Stage 1 + Stage 2) with the same protocol and outputs as ``src.commands.inference``.
     python -m src.commands.inference_finesplat --config src/configs/finesplat/eval/dl3dv_6v_posed.yaml
+inference.checkpoint: {ckpt_path, use_ema, full_state}; an empty ckpt_path leaves the Stage-2
+    head zero-initialised, i.e. the Stage-1-only control through the same decode path.
 """
 
 import os
@@ -43,12 +31,9 @@ def load_finesplat(config, base, device):
         print("No Stage-2 checkpoint: the zero-init head makes this the Stage-1-only control.")
     else:
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        # use_ema: the EMA weights an end-to-end checkpoint carries. full_state: keep the
-        # model.* keys too (end-to-end training updates Stage 1, so the checkpoint's Stage 1
-        # must win over inference.ckpt_path). Both default off: Stage-2-only checkpoints.
+        # full_state keeps the model.* keys, so an end-to-end checkpoint's Stage 1 wins over inference.ckpt_path
         state = checkpoint_state(ckpt, cconf.get("use_ema", False))
         if not cconf.get("full_state", False):
-            # Stage 1 is saved alongside Stage 2; it is already loaded.
             state = {k: v for k, v in state.items() if not k.startswith("model.")}
         missing, unexpected = model.load_state_dict(state, strict=False)
         trained = [k for k in missing if not k.startswith("model.")]

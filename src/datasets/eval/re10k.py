@@ -1,13 +1,9 @@
 """RealEstate10K evaluation over WAI-converted per-scene directories.
 
-Each test scene lives in its own directory holding `images/` plus a `scene_meta.json`
-whose frames carry an OpenCV camera-to-world `transform_matrix`, pixel-space
-`fl_x/fl_y/cx/cy`, and an absolute `file_path`. Scene directories are named
-'<split>_<scene_id>' while the eval index in src/data/re10k_ctx_*v_tgt_*v.json is keyed
-by the bare scene_id, so the split prefix is stripped before the lookup.
-
-Preprocessing (resize/crop, pose normalization) is shared with the DL3DV inference path so
-the eval sets stay comparable.
+Each scene directory holds ``images/`` and a ``scene_meta.json`` whose frames carry an
+OpenCV camera-to-world ``transform_matrix``, pixel-space ``fl_x/fl_y/cx/cy`` and an
+absolute ``file_path``. Directories are named '<split>_<scene_id>'; the eval index
+(src/data/re10k_ctx_*v_tgt_*v.json) is keyed by the bare scene_id.
 """
 
 import json
@@ -34,12 +30,7 @@ class RE10KEvalDataset(Dataset):
     """Dataset for inference over RealEstate10K scenes stored as WAI scene_meta.json."""
 
     def __init__(self, config):
-        """
-        Args:
-            config: Config whose data.data_path points at a text file listing the
-                per-scene scene_meta.json paths and data.json_path at the eval index
-                naming the context and target views for each scene.
-        """
+        """``data.data_path``: text file of scene_meta.json paths; ``data.json_path``: eval index."""
         self.config = config
         with open(config.data.data_path, "r") as f:
             self.scene_json_paths = [line.strip() for line in f if line.strip()]
@@ -49,22 +40,13 @@ class RE10KEvalDataset(Dataset):
             self.scene_dict = json.load(f)
 
     def __len__(self) -> int:
-        """Return the number of scenes in the dataset."""
         return len(self.scene_json_paths)
 
     def process_frames(
         self,
         frames: list[dict],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Load the given frames and return images, intrinsics, and poses.
-
-        Args:
-            frames: Frame entries from a scene_meta.json.
-
-        Returns:
-            A tuple of (images, intrinsics, c2ws) where images is (N, C, H, W),
-            intrinsics is (N, 4), and c2ws is (N, 4, 4).
-        """
+        """Load and resize/crop frames. Returns images (N,C,H,W), intrinsics (N,4) fxfycxcy, c2ws (N,4,4)."""
         target_h = self.config.data.get("resize_h", -1)
         target_w = self.config.data.get("resize_w", -1)
         square_crop = self.config.data.square_crop
@@ -91,14 +73,7 @@ class RE10KEvalDataset(Dataset):
         return images, intrinsics, c2ws
 
     def __getitem__(self, idx: int) -> dict:
-        """Return a scene sample, falling back to a random scene on error.
-
-        Args:
-            idx: Index into scene_json_paths.
-
-        Returns:
-            A dict with image, intrinsic, pose, index, and scene_name tensors.
-        """
+        """Return a scene sample, falling back to a random scene on error."""
         try:
             return self._load_scene(idx)
         except Exception:
@@ -107,19 +82,7 @@ class RE10KEvalDataset(Dataset):
             return self.__getitem__(random.randint(0, len(self) - 1))
 
     def _load_scene(self, idx: int) -> dict:
-        """Load and process the scene at the given index.
-
-        Args:
-            idx: Index into scene_json_paths.
-
-        Returns:
-            A dict with concatenated input+target image, intrinsic, pose, and index
-            tensors, plus the scene_name string.
-
-        Raises:
-            KeyError: If the scene is not present in the eval index.
-            ValueError: If poses contain NaN or Inf after normalization.
-        """
+        """Load one scene; image/fxfycxcy/c2w/index hold input frames then target frames."""
         with open(self.scene_json_paths[idx], "r") as f:
             scene_meta = json.load(f)
 

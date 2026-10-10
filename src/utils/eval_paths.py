@@ -1,26 +1,17 @@
 """Where experiment output goes.
 
-Three kinds of output, three roots, so none of them buries the others:
-
     <experiments>/eval/     scores and renders, laid out by protocol
     <experiments>/train/    checkpoints and watchlists, one directory per run
-    <experiments>/wandb/    whatever W&B writes locally
+    <experiments>/wandb/    W&B local files
 
-Under ``eval`` one rule, applied everywhere, so a result can be found from its settings
-alone:
+Under ``eval`` every result is filed by its settings:
 
-    <H>res/<resize_mode>/<dataset>/<N>v/<camera_mode>/<run>
+    <H>res/<resize_mode>/<dataset>/<N>v/<camera_mode>/<run>[/<ckpt_tag>]
 
-``resize_mode`` sits high because it is not a property of the model being scored. DL3DV_480
-is 480x270, so every evaluation resizes, and the filter moves 6-view PSNR from 26.09 to
-27.02 - more than Stage 2 itself. Numbers from two filters are not comparable, so they
-never share a parent.
-
-``camera_mode`` gains an ``_epa`` suffix when the poses are realigned against the
-predicted Gaussians before scoring, since that changes the number without changing any
-config field the path already carries. ``run`` names the checkpoint or baseline being
-scored - the fields above pin down the protocol but not the model, and a directory
-holding two different models' scores under one name is the state this layout replaces.
+from ``data.resize_h``, ``data.resize_mode``, ``inference.dataset`` (or the data list
+name), ``data.num_input_frames``, ``inference.camera_mode`` (``_epa`` appended when
+``inference.pose_optimization`` is set), ``inference.run`` and ``inference.ckpt_tag``.
+``resize_mode`` sits high because the resize filter changes PSNR by more than Stage 2 does.
 """
 
 import re
@@ -30,18 +21,12 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Everything produced from here on. The earlier tree is frozen beside it as 3Xplat_exp;
-# nothing writes there any more, so a result's root says which era it belongs to.
 EXPERIMENTS = REPO_ROOT.parent / "FineSplat_exp_final"
 EVAL_ROOT = EXPERIMENTS / "eval"
 TRAIN_ROOT = EXPERIMENTS / "train"
 
 def load_eval_config(argv=None):
-    """``<config> [out_dir] [key=value ...]`` -> (config, out_dir or None).
-
-    Dotlist overrides (``inference.scene_range=[0,70]``) are merged into the config; the
-    one argument without ``=`` is an explicit output directory.
-    """
+    """``<config> [out_dir] [key=value ...]`` -> (config, out_dir or None); dotlist overrides are merged."""
     args = list(sys.argv[1:] if argv is None else argv)
     config = OmegaConf.load(args[0])
     out_dir = [a for a in args[1:] if "=" not in a]
@@ -70,12 +55,7 @@ def dataset_of(config) -> str:
 
 
 def ckpt_tag(config) -> str | None:
-    """A level under the run for a specific checkpoint, or None for the run's latest.
-
-    Scoring several checkpoints of one training run is a question about that run, so they
-    belong under it rather than beside it as ``<run>_step2000``. ``finesplat_last.pt`` and
-    ``finesplat_best.pt`` get no level - they are what "the run" means with no qualifier.
-    """
+    """A level under the run for a specific step checkpoint; None for ``*_last.pt`` / ``*_best.pt``."""
     tag = config.get("inference", {}).get("ckpt_tag")
     if tag:
         return tag
@@ -102,10 +82,7 @@ def eval_out_dir(config, run: str, root: Path | str = EVAL_ROOT) -> Path:
 
 
 def train_out_dir(config, root: Path | str = TRAIN_ROOT) -> Path:
-    """Where a training run keeps its checkpoints: ``<experiments>/train/<run>``.
-
-    ``train.out_dir`` still wins if set, for runs that belong somewhere else entirely.
-    """
+    """``train.out_dir`` if set, else ``<experiments>/train/<train.run>``."""
     train = config.get("train", {})
     if train.get("out_dir"):
         return Path(train["out_dir"])
@@ -116,12 +93,7 @@ def train_out_dir(config, root: Path | str = TRAIN_ROOT) -> Path:
 
 
 def resolve_out_dir(config) -> Path:
-    """Where this eval writes: ``inference.out_dir`` if given, else the rule above.
-
-    Configs that name a directory outright keep it - one-off renders and the visualize/
-    scripts have no business in the results tree. Everything else supplies
-    ``inference.run`` and is filed automatically.
-    """
+    """``inference.out_dir`` if set, else ``eval_out_dir`` under ``inference.run``."""
     inf = config.get("inference", {})
     if inf.get("out_dir"):
         return Path(inf["out_dir"])

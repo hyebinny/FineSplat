@@ -1,27 +1,9 @@
 """Stage 2 of FineSplat: error-conditioned correction of the Stage-1 tokens.
 
-Stage 1 (2Xplat: DA3 + MVP) predicts one fused token per 4x4 patch, which its Gaussian
-head decodes into 4 Gaussians. Stage 2 runs ``num_steps`` (4) correction steps on top. Each
-step renders the current Gaussians into the context views, compares them with the inputs
-(a per-view error map: frozen ResNet-18 feature difference + RGB difference, concatenated
-with an embedding of the input view itself, at 1/stride resolution), lifts the map onto
-the tokens by projecting every token into every view and averaging the bilinear samples
-over the views it is visible in (its home view always counts, concatenated with the error
-at its own patch), fuses token and error embeddings, and runs them through PTv3 blocks
-(serialized window attention + FFN, no pooling, no decoder) over the whole token cloud. A
-zero-initialised linear head predicts a token residual, which the Stage-1 head decodes
-into the next step's Gaussians.
-
-Ported from ZipSplat's ``splatfactory/models/networks/zipsplat_ptv3_refiner.py``, with the
-differences the base model forces:
-  - 18,816 tokens per scene at 6 views (6 x 56 x 56), against ZipSplat's 1,944. The flat
-    design's premise - "a 1024 window already covers half the scene" - does not hold here;
-    ``patch_size`` is left at 1024 regardless, so a window sees ~5% of the scene.
-  - 4 Gaussians per token, against 32.
-  - 2Xplat has no colour skip connection, so the whole token stream is corrected.
-  - Opacity goes through 2Xplat's SH path per view. At the shipped ``opacity_degree: 0``
-    that path is view-independent (the DC band is a constant), so the per-view evaluation
-    is redundant; it is kept because the surrounding code is written for any degree.
+Stage 1 (2Xplat) predicts one token per 4x4 patch, decoded into 4 Gaussians. Each Stage-2
+step renders the current Gaussians into the context views, builds a per-view error map,
+lifts it onto the tokens by projection and visibility pooling, runs PTv3 serialized-attention
+blocks over the token cloud, and predicts a token residual the frozen Stage-1 head decodes.
 
     python -m src.model.stage2   # self-check (needs a GPU)
 """
@@ -47,19 +29,10 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 default_conf = {
-    # "token":    one point per patch token, feature = the 1024-d token, the head predicts a
-    #             token residual that the Stage-1 Gaussian head then decodes.
-    # "gaussian": one point per Gaussian (4x as many), feature = that Gaussian's raw 23
-    #             pre-activation parameters, the head predicts a residual on them. The
-    #             Gaussian head is not re-run; only the activations and ray
-    #             parameterisation are, so every bound they impose still holds.
+    # "token": one point per patch token, residual on the token (decoded by the Stage-1 head).
+    # "gaussian": one point per Gaussian, residual on its raw pre-activation parameters.
     "mode": "token",
-    # Stage-2 steps per forward. Each step re-renders the context views from the Gaussians
-    # the previous step produced, so the error map it reads is the error that remains -
-    # which is what a single-step model never sees, and why applying a single-step model
-    # twice at test time degraded after the second application. ReSplat runs 2-4, MoGe3
-    # runs 3. Tokens are detached between steps so each step learns to improve whatever
-    # state it is handed, rather than backpropagating through the whole chain.
+    # Stage-2 steps per forward; each re-renders the context views from the previous step.
     "num_steps": 4,
     "network": {
         "width": 512,
@@ -74,36 +47,27 @@ default_conf = {
     "error": {
         "stride": 4,  # maps at 56x56 for 224x224 inputs
         "width": 128,  # per-view map = [error 128 | image 128]
-        "lift_channels": 256,  # per-token error feature
+        "lift_channels": 256,
         "occlusion_tol": 0.15,
         "reduce": "mean",  # how visible views are pooled per token: mean | max
         "lift": "mean+home",  # what reaches the token: mean+home | mean | home
-        "use_rgb_diff": True,    # pixel RGB difference, summed into the error embedding
-        "use_image_embed": True,  # separate embedding of the input image
-        "backbone": "resnet18",  # error feature extractor: resnet18 | vgg16_lpips
+        "use_rgb_diff": True,
+        "use_image_embed": True,
+        "backbone": "resnet18",  # frozen error feature extractor: resnet18 | vgg16_lpips
     },
 }
 
 
 def _sample(img: torch.Tensor, pix: torch.Tensor, size: int) -> torch.Tensor:
-    """Bilinear sample img [N,C,h,w] at full-resolution pixel coords pix [N,M,2] -> [N,M,C].
-
-    Pixel centres sit at i+0.5 (COLMAP), which is grid_sample's align_corners=False convention.
-    """
-    grid = (pix / size * 2 - 1).unsqueeze(2)  # [N,M,1,2]
+    """Bilinear sample img [N,C,h,w] at pixel coords pix [N,M,2] -> [N,M,C]; centres at i+0.5 (align_corners=False)."""
+    grid = (pix / size * 2 - 1).unsqueeze(2)
     out = F.grid_sample(img, grid.to(img.dtype), mode="bilinear", padding_mode="border", align_corners=False)
     return out[..., 0].transpose(1, 2)  # [N,M,C]
 
 
 def _sample_sparse(imgs: torch.Tensor, pix: torch.Tensor, img_idx: torch.Tensor,
                    size: int) -> torch.Tensor:
-    """Bilinear sample imgs [N,C,h,w] at pixel coords pix [P,2], each from image img_idx[p].
-
-    Same convention as ``_sample`` (align_corners=False, padding_mode="border") written as a
-    gather so that only the P (token, view) pairs that survive the frustum test are touched.
-    Sampling every token in every view costs O(V * K) = O(V^2) work per step, while a token
-    is visible in only a handful of views regardless of how many there are.
-    """
+    """Gather form of ``_sample``: imgs [N,C,h,w], pix [P,2] from image img_idx[p] -> [P,C]."""
     n, c, h, w = imgs.shape
     xs = (pix[:, 0] * (w / size) - 0.5).clamp(0, w - 1)
     ys = (pix[:, 1] * (h / size) - 0.5).clamp(0, h - 1)
@@ -119,19 +83,7 @@ def _sample_sparse(imgs: torch.Tensor, pix: torch.Tensor, img_idx: torch.Tensor,
 
 
 class ErrorMapEncoder(nn.Module):
-    """Per-view map at 1/stride resolution: [error | image], each `width` channels.
-
-    ``use_rgb_diff`` and ``use_image_embed`` exist for ablations: the first drops the raw
-    pixel-difference term that is summed into the error embedding, the second drops the
-    separate embedding of the input image (halving the map's channels).
-
-    ``backbone`` selects the frozen feature extractor for the error term:
-      - "resnet18": conv1 / layer1 / layer2 (64+64+128 ch), raw feature difference.
-      - "vgg16_lpips": VGG16 relu1_2 / relu2_2 / relu3_3 (64+128+256 ch), each layer
-        channel-unit-normalised like LPIPS's normalize_tensor before the difference, so
-        feat_proj plays the role of LPIPS's learned per-channel weights. The difference
-        stays signed (LPIPS squares it) so downstream keeps the error's direction.
-    """
+    """Per-view error map at 1/stride resolution: [error `width` | image `img_width`] channels."""
 
     def __init__(self, image_size: int, stride: int, width: int,
                  use_rgb_diff: bool = True, use_image_embed: bool = True,
@@ -144,20 +96,15 @@ class ErrorMapEncoder(nn.Module):
         self.backbone = backbone
         self.use_feat_diff = use_feat_diff
         self.image_embed = image_embed if use_image_embed else None
-        # Both error branches off is the MVP-only ablation: the map is the image half
-        # alone, and the lifter still runs its home-sample and visibility-mean over it.
         self.use_err = use_feat_diff or use_rgb_diff
         assert self.use_err or use_image_embed, "no error branches and no image embed: empty map"
         if not use_feat_diff:
-            # I_Res off: the frozen backbone is not built at all (it is the encoder's
-            # whole cost); with use_rgb_diff the error is the raw pixel difference alone.
             self.stem = self.rest = self.layer2 = None
             self._stages = []
         elif backbone == "resnet18":
             from torchvision.models import ResNet18_Weights, resnet18
 
-            # attribute names are load-bearing: existing checkpoints store the frozen
-            # backbone under error.stem/rest/layer2 - do not rename.
+            # checkpoints store the frozen backbone under error.stem/rest/layer2 - do not rename
             r = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
             self.stem = nn.Sequential(r.conv1)
             self.rest = nn.Sequential(r.bn1, r.relu, r.maxpool, r.layer1)
@@ -168,7 +115,7 @@ class ErrorMapEncoder(nn.Module):
             from torchvision.models import VGG16_Weights, vgg16
 
             vf = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).features
-            self.slice1, self.slice2, self.slice3 = vf[:4], vf[4:9], vf[9:16]  # relu1_2/relu2_2/relu3_3
+            self.slice1, self.slice2, self.slice3 = vf[:4], vf[4:9], vf[9:16]
             self._stages = [self.slice1, self.slice2, self.slice3]
             feat_channels = 64 + 128 + 256
         for m in self._stages:
@@ -179,17 +126,12 @@ class ErrorMapEncoder(nn.Module):
         assert image_size % stride == 0, (image_size, stride)
         self.stride = stride
         self.grid_hw = (image_size // stride, image_size // stride)
-        # ``img_width`` defaults to ``width``, the square map both halves shared until the
-        # image embedding became the base's own 256-d stage-1 tokens: projecting those down
-        # to 128 throws half their rank away, and the two halves need not match.
         img_width = width if img_width is None else img_width
         self.channels = (width if self.use_err else 0) + (img_width if use_image_embed else 0)
         self.feat_proj = nn.Linear(feat_channels, width) if use_feat_diff else None
         self.rgb_proj = nn.Linear(3 * stride * stride, width) if use_rgb_diff else None
         self.err_norm = nn.LayerNorm(width) if self.use_err else None
-        # "gt_rgb": our own 4x4 patch embedding of the context image. "mvp_s1": the frozen
-        # base's stage-1 patch tokens for the same view, which are its own 4x4 patch
-        # embedding already computed by Stage 1 - nothing extra is run.
+        # "gt_rgb": pixel-unshuffled context image; "mvp_s1": Stage 1's own patch tokens for the view
         img_in = {"gt_rgb": 3 * stride * stride, "mvp_s1": mvp_dim}.get(self.image_embed)
         self.img_proj = (
             nn.Sequential(nn.Linear(img_in, img_width), nn.LayerNorm(img_width))
@@ -220,11 +162,7 @@ class ErrorMapEncoder(nn.Module):
         )
 
     def image_map(self, gt: torch.Tensor, mvp_feat: torch.Tensor | None = None):
-        """The image half of the map, [N, gh, gw, img_width].
-
-        Neither the input image nor the base's stage-1 tokens change between Stage-2
-        steps, so this is computed once per forward and handed to every step.
-        """
+        """The image half of the map, [N, gh, gw, img_width]; constant across steps, computed once per forward."""
         if self.img_proj is None:
             return None
         if self.image_embed == "mvp_s1":
@@ -237,14 +175,7 @@ class ErrorMapEncoder(nn.Module):
                 gt_feat: torch.Tensor | None = None,
                 mvp_feat: torch.Tensor | None = None,
                 img: torch.Tensor | None = None) -> torch.Tensor:
-        """render, gt [N,3,H,W] -> [N, width + img_width, gh, gw].
-
-        ``gt_feat`` is the backbone's features for ``gt``, which do not change between
-        Stage-2 steps. Passing them in keeps the ResNet at one call per step instead of
-        two; ReSplat caches the same thing (``assert i == 0`` on its first pass).
-        ``mvp_feat`` [N, mvp_dim, gh, gw] is the frozen base's stage-1 patch tokens, read
-        only when ``image_embed == "mvp_s1"``.
-        """
+        """render, gt [N,3,H,W] -> [N, width + img_width, gh, gw]; ``gt_feat``/``img`` may be precomputed."""
         if not self.use_err:
             img = self.image_map(gt, mvp_feat) if img is None else img
             return img.permute(0, 3, 1, 2)
@@ -281,17 +212,7 @@ class _GlobalBlock(nn.Module):
 
 
 class ErrorGlobalAttn(nn.Module):
-    """Exchange information between the per-view error maps, ReSplat-style.
-
-    The maps are narrowed to ``attn_channels`` and pixel-unshuffled by ``down`` before
-    attention, so the tokens that attend are a factor ``down`` coarser than the map. At
-    224px with error stride 4 and down 4 that is 6 x 14 x 14 = 1176 tokens of 64 channels -
-    negligible next to the 18,816 points Stage 2 itself runs on.
-
-    Optional: the world-grid Stage 2 already mixes views inside its serialized windows and
-    through the projected error lifting, so this module is off in the best configuration
-    and used by the ReSplat port, where it is the only cross-view path.
-    """
+    """Optional cross-view attention over the per-view error maps, at 1/``down`` resolution (off by default)."""
 
     def __init__(self, channels: int, down: int = 4, attn_channels: int = 64,
                  num_heads: int = 1, depth: int = 1):
@@ -305,7 +226,7 @@ class ErrorGlobalAttn(nn.Module):
         self.norm2 = nn.LayerNorm(attn_channels * down ** 2)
         self.conv = nn.Conv2d(attn_channels, attn_channels, 3, 1, 1)
         self.proj3 = nn.Linear(attn_channels, channels)
-        nn.init.zeros_(self.proj3.weight)  # starts as identity on the error maps
+        nn.init.zeros_(self.proj3.weight)
         nn.init.zeros_(self.proj3.bias)
 
     def forward(self, E: torch.Tensor) -> torch.Tensor:
@@ -328,9 +249,8 @@ class ErrorGlobalAttn(nn.Module):
 
 
 class ErrorLifter(nn.Module):
-    """Per-view maps -> one feature per token: mean (or channel-wise max) over the views the
-    token is visible in (its home view always counts) concatenated with the map at the
-    token's own patch."""
+    """Per-view maps -> one feature per token: pooled over the views the token is visible in
+    (home view always counts), concatenated with the map at the token's own patch."""
 
     def __init__(self, in_channels: int, out_channels: int, occlusion_tol: float,
                  reduce: str = "mean", lift: str = "mean+home"):
@@ -349,16 +269,13 @@ class ErrorLifter(nn.Module):
         B, V, C = E.shape[:3]
         K = coord.shape[1]
         dev = E.device
-        home_view = torch.arange(K, device=dev) // (side * side)  # token k comes from view k // side^2
+        home_view = torch.arange(K, device=dev) // (side * side)
         if self.lift == "home":
-            # the pooled term is never read, so skip the projection entirely
             cnt = torch.ones(B, K, 1, device=dev, dtype=E.dtype)
             pooled = None
         else:
-            # Project every token into every view. This part is a 3x3 matmul per pair and
-            # stays O(V*K); only the two samplings below are culled down to the pairs that
-            # land inside a frustum, which is what keeps the cost linear in V.
-            w2c = i_c2w.float().inverse()  # [B,V,4,4]
+            # project every token into every view; only in-frustum pairs are sampled below
+            w2c = i_c2w.float().inverse()
             p_cam = (torch.einsum("bkj,bvij->bvki", coord.float(), w2c[:, :, :3, :3])
                      + w2c[:, :, None, :3, 3])
             z = p_cam[..., 2]
@@ -367,7 +284,7 @@ class ErrorLifter(nn.Module):
             pix = uvw[..., :2] / uvw[..., 2:3].clamp(min=EPS)
             in_frustum = (z > EPS) & (pix[..., 0] >= 0) & (pix[..., 0] < size) \
                 & (pix[..., 1] >= 0) & (pix[..., 1] < size)
-            is_home = home_view[None, :] == torch.arange(V, device=dev)[:, None]  # [V,K]
+            is_home = home_view[None, :] == torch.arange(V, device=dev)[:, None]
             b_i, v_i, k_i = (in_frustum | is_home).nonzero(as_tuple=True)
             img_i = b_i * V + v_i
             pix_c = pix[b_i, v_i, k_i]
@@ -383,8 +300,7 @@ class ErrorLifter(nn.Module):
             cnt = torch.zeros(B * K, 1, device=dev, dtype=E.dtype).index_add(
                 0, flat_idx, torch.ones(sel.numel(), 1, device=dev, dtype=E.dtype)).view(B, K, 1)
 
-            # Sample the visible pairs in chunks: their number grows with the view count and a
-            # single flat [P, C] buffer would dominate memory at high V (20 GB at 128 views).
+            # chunked: a single flat [P, C] buffer would dominate memory at high view counts
             e_flat = E.reshape(B * V, C, *E.shape[-2:])
             acc = (torch.full((B * K, C), -torch.inf, device=dev, dtype=E.dtype)
                    if self.reduce == "max" else torch.zeros(B * K, C, device=dev, dtype=E.dtype))
@@ -396,7 +312,7 @@ class ErrorLifter(nn.Module):
                        if self.reduce == "max" else acc.index_add(0, idx, e_s))
             pooled = acc.view(B, K, C)
             if self.reduce != "max":
-                pooled = pooled / cnt.clamp(min=1)  # cnt >= 1 (home view)
+                pooled = pooled / cnt.clamp(min=1)
 
         # home view: token (v, i, j) <-> patch centre ((j+0.5)p, (i+0.5)p) of view v
         ij = torch.stack(torch.meshgrid(torch.arange(side), torch.arange(side), indexing="ij"), -1)
@@ -426,19 +342,12 @@ def _knn_indices(coord: torch.Tensor, offset: torch.Tensor, k: int) -> torch.Ten
 
 
 def _knn_block_forward(blk, feat: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
-    """One PTv3 block evaluated with kNN attention instead of serialized windows.
-
-    Reuses the block's own weights - cpe (the Linear+LN that replaces xCPE), norm1,
-    attn.qkv / attn.proj, norm2, mlp - and mirrors Block.forward's residual layout
-    exactly. Every point attends to its ``idx`` neighbours (itself included), so the
-    receptive field is a true metric neighbourhood rather than a serialized window.
-    Inference-time only: nothing here is trained.
-    """
+    """One PTv3 block evaluated with gather attention over ``idx`` [N,k] neighbours instead of
+    serialized windows; reuses the block's weights and mirrors Block.forward's residual layout."""
     n, k = idx.shape
     a = blk.attn
     heads = a.num_heads
     shortcut = feat
-    # cpe residual first, as in Block.forward
     for m in blk.cpe._modules.values():
         feat = m(feat)
     feat = shortcut + feat
@@ -446,19 +355,17 @@ def _knn_block_forward(blk, feat: torch.Tensor, idx: torch.Tensor) -> torch.Tens
     x = feat
     for m in blk.norm1._modules.values():
         x = m(x)
-    qkv = a.qkv(x)                                   # [N, 3C']
+    qkv = a.qkv(x)
     cp = qkv.shape[-1] // 3
     q, kk, v = qkv.split(cp, dim=-1)
     hd = cp // heads
     q = q.view(n, heads, hd)
-    kn = kk[idx.reshape(-1)].view(n, k, heads, hd)   # neighbour keys
+    kn = kk[idx.reshape(-1)].view(n, k, heads, hd)
     vn = v[idx.reshape(-1)].view(n, k, heads, hd)
     attn = torch.einsum("nhd,nkhd->nhk", q * a.scale, kn)
     attn = attn.softmax(dim=-1)
     out = torch.einsum("nhk,nkhd->nhd", attn, vn).reshape(n, cp)
     out = a.proj(out)
-    # Block.forward applies drop path to both residual branches; mirror it so a model
-    # trained through this path sees the same regularization as the serialized one.
     for m in blk.drop_path._modules.values():
         out = m(out)
     feat = shortcut + out
@@ -478,22 +385,18 @@ def _grid_neighbors(mode: str, B: int, V: int, side: int, device, coord=None, c2
                     tol: float = 0.15) -> torch.Tensor:
     """Image-space neighbour indices for tokens laid out (b, v, i, j) -> [B*V*side^2, n].
 
-    "inframe": the 3x3 block around the token in its own view (9, self included).
-    "xframe":  the token and its 4-neighbourhood in its own view, plus the token its 3D
-               position projects to in the partner view of its MVP view pair (v ^ 1) and
-               that token's 4-neighbourhood (10). The partner half falls back to self when
-               the projection leaves the frustum or fails the depth test against the
-               rendered depth, the same visibility rule the error lifting uses.
-    Out-of-image neighbours are replaced by the token itself.
+    "inframe": 3x3 block in the token's own view (9). "xframe": 4-neighbourhood in its own view
+    plus the 4-neighbourhood of its projection into the partner view v ^ 1 (10), falling back
+    to self when the projection is out of frustum or fails the depth test.
     """
     S2 = side * side
     K = V * S2
     ar = torch.arange(side, device=device)
     ii, jj = torch.meshgrid(ar, ar, indexing="ij")
-    ii, jj = ii.reshape(-1), jj.reshape(-1)                      # [S2]
+    ii, jj = ii.reshape(-1), jj.reshape(-1)
     base = (torch.arange(B, device=device)[:, None, None] * K
-            + torch.arange(V, device=device)[None, :, None] * S2)  # [B,V,1]
-    self_idx = (base + torch.arange(S2, device=device)).reshape(-1)   # [B*K]
+            + torch.arange(V, device=device)[None, :, None] * S2)
+    self_idx = (base + torch.arange(S2, device=device)).reshape(-1)
 
     def offsets(ci, cj, offs):
         cols = []
@@ -515,8 +418,8 @@ def _grid_neighbors(mode: str, B: int, V: int, side: int, device, coord=None, c2
     own = [torch.where(ok.expand(B, V, -1).reshape(-1), (base + c).reshape(-1), self_idx)
            for c, ok in offsets(ii, jj, cross)]
     # project every token into its partner view
-    partner = torch.arange(V, device=device) ^ 1                  # [V]
-    pc2w = c2w[:, partner].float()                                # [B,V,4,4] partner cams
+    partner = torch.arange(V, device=device) ^ 1
+    pc2w = c2w[:, partner].float()
     w2c = pc2w.inverse()
     pts = coord.float().view(B, V, S2, 3)
     p_cam = torch.einsum("bvkj,bvij->bvki", pts, w2c[..., :3, :3]) + w2c[..., None, :3, 3]
@@ -527,9 +430,9 @@ def _grid_neighbors(mode: str, B: int, V: int, side: int, device, coord=None, c2
     inside = (z > EPS) & (pix[..., 0] >= 0) & (pix[..., 0] < size) & (pix[..., 1] >= 0) & (pix[..., 1] < size)
     px = pix[..., 0].floor().long().clamp(0, size - 1)
     py = pix[..., 1].floor().long().clamp(0, size - 1)
-    dpart = depth.float()[:, partner]                             # [B,V,H,W]
+    dpart = depth.float()[:, partner]
     d = torch.gather(dpart.reshape(B, V, -1), 2, py * dpart.shape[-1] + px)
-    visible = inside & ((d <= EPS) | (z <= d * (1 + tol)))        # [B,V,S2]
+    visible = inside & ((d <= EPS) | (z <= d * (1 + tol)))
     ci, cj = (py // patch).clamp(0, side - 1), (px // patch).clamp(0, side - 1)
     pbase = (torch.arange(B, device=device)[:, None, None] * K + partner[None, :, None] * S2)
     theirs = []
@@ -542,8 +445,7 @@ def _grid_neighbors(mode: str, B: int, V: int, side: int, device, coord=None, c2
 
 
 def _block(channels, attn_channels, num_heads, patch_size, drop_path, order_index):
-    """PTv3 block (xCPE -> window attention -> FFN, pre-norm LayerNorm) whose attention runs
-    in `attn_channels` (ReSplat-style low-rank q/k/v)."""
+    """PTv3 block (xCPE -> window attention -> FFN, pre-norm) with q/k/v in `attn_channels`."""
     blk = Block(
         channels=channels, num_heads=num_heads, patch_size=patch_size, mlp_ratio=4, qkv_bias=True,
         drop_path=drop_path, norm_layer=nn.LayerNorm, act_layer=nn.GELU, pre_norm=True, order_index=order_index,
@@ -571,9 +473,7 @@ class Stage2(nn.Module):
         self.z_dim = z_dim
         self.order = list(conf["order"])
         W = conf["width"]
-        # raw_input: the point feature is a small heterogeneous vector (the 23 raw Gaussian
-        # parameters) that goes into the fuse unprojected, normalised only - the ReSplat
-        # recipe. aux is a per-point conditioning stream (the parent token, broadcast).
+        # raw_input: raw Gaussian parameters enter the fuse normalised, unprojected; aux: per-point conditioning
         if raw_input:
             self.token_proj = nn.LayerNorm(token_dim)
             fuse_in = token_dim + error_channels + aux_channels
@@ -587,18 +487,15 @@ class Stage2(nn.Module):
              for i in range(conf["depth"])]
         )
         self.norm = nn.LayerNorm(W)
-        # z_dim=None: no head, forward returns the normalised backbone features instead of a
-        # residual - the caller owns the output projection (gstoken_DeltaZ groups the four
-        # features of a token before its own zero-init head).
-        # Inference-time attention swap: "knn" evaluates every block over each point's
-        # knn_k nearest neighbours (weights unchanged) instead of serialized windows.
+        # z_dim=None: no head, forward returns the normalised backbone features.
+        # attn_mode: "serialized" (trained) or an inference-time gather swap: knn | inframe | xframe.
         self.attn_mode = conf.get("attn_mode", "serialized")
         self.knn_k = conf.get("knn_k", 8)
         self.head = nn.Linear(W, z_dim) if z_dim is not None else None
         if self.head is not None:
             nn.init.zeros_(self.head.weight)  # zero-init -> step 0 reproduces the frozen model
             nn.init.zeros_(self.head.bias)
-        self.window = 0  # attention window actually used (logged once)
+        self.window = 0
 
     def _point(self, grid_coord, offset, feat):
         """Serialize `feat` under one grid. Rebuilt whenever the grid changes between blocks."""
@@ -615,13 +512,7 @@ class Stage2(nn.Module):
         return point
 
     def forward(self, tokens, err, grids, aux=None):
-        """tokens [B,K,D], err [B,K,E] -> [B,K,z_dim].
-
-        ``grids`` is a list of (grid_coord, offset); the blocks cycle over it. A single
-        entry (the world grid) means every block shares one serialization. ``offset`` marks
-        the end of each independent point cloud - one per scene here - and thereby which
-        points may attend to each other.
-        """
+        """tokens [B,K,D], err [B,K,E], grids [(grid_coord, offset)] cycled over by the blocks -> [B,K,z_dim]."""
         B, K = tokens.shape[:2]
         parts = [self.token_proj(tokens), err.to(tokens.dtype)]
         if aux is not None:
@@ -634,10 +525,10 @@ class Stage2(nn.Module):
                 grid_coord, offset = grids[0]
                 idx = _knn_indices(grid_coord.reshape(-1, 3).float(), offset, self.knn_k)
             else:
-                idx = grids[0][1]  # precomputed image-space neighbours ("idx", tensor)
+                idx = grids[0][1]
             for blk in self.blocks:
                 feat = _knn_block_forward(blk, feat, idx)
-            self.window = -idx.shape[1]  # logged once; negative marks gather attention
+            self.window = -idx.shape[1]  # negative marks gather attention in the log line
             feat = self.norm(feat)
             if self.head is None:
                 return feat.view(B, K, -1)
@@ -661,22 +552,13 @@ class Stage2(nn.Module):
 
 
 class FineSplat(nn.Module):
-    """FineSplat: Stage 1 (2Xplat) + Stage 2 (error-conditioned PTv3 token correction).
-
-    ``forward`` returns the target-view renderings after every Stage-2 step, with
-    gradients, plus the Stage-1 Gaussians and rendering for reference.
-    """
+    """FineSplat: Stage 1 (2Xplat) + Stage 2; ``forward`` returns the target-view render after every step."""
 
     def __init__(self, model, conf: dict):
         super().__init__()
-        # e2e: true unfreezes the whole Stage 1 (DA3 + MVP + GS head) and trains it
-        # jointly with Stage 2, as in 2Xplat's own update stage. Default: Stage 1 is
-        # frozen and only Stage 2 learns.
-        self.e2e = conf.get("e2e", False)
-        # grad_ckpt: recompute each step's Stage-2 forward in backward instead of keeping
-        # its activations (every step's graph lives until the single backward).
-        self.grad_ckpt = conf.get("grad_ckpt", False)
-        self.model = model  # TwoExpertModel (frozen unless e2e)
+        self.e2e = conf.get("e2e", False)  # true: train Stage 1 jointly; default: Stage 1 frozen
+        self.grad_ckpt = conf.get("grad_ckpt", False)  # recompute each step's Stage-2 forward in backward
+        self.model = model
         if not self.e2e:
             self.model.requires_grad_(False)
             self.model.eval()
@@ -690,28 +572,17 @@ class FineSplat(nn.Module):
         self.G = expert.gaussian_side ** 2
 
         if self.mode == "token":
-            # One point per patch token; its home pixel is the patch centre.
             self.patch = expert.patch_size
         else:
-            # One point per Gaussian. The unfold order is (v hh ph ww pw), so the Gaussians
-            # of a view form a plain gh x gw grid of sub-cells and the same home-patch
-            # lookup works with the sub-cell stride.
+            # one point per Gaussian; the (v hh ph ww pw) unfold makes a view's Gaussians a
+            # plain grid of sub-cells, so the same home-patch lookup works with the sub-cell stride
             self.patch = expert.gaussian_stride
         self.side = self.image_size // self.patch
 
         self.num_steps = conf.get("num_steps", 4)
-        # Context views to re-render with gradients so the loss can score them. The error
-        # map already shows Stage 2 its context error; supervising only the held-out
-        # views leaves it to infer that closing that error helps them. Test-time
-        # optimisation closes it directly and gains +1.76 PSNR on the held-out views, so
-        # the signal transfers - it is simply not in the objective. 0 keeps the shipped
-        # behaviour. The views are drawn once per forward; rendering all of them would cost
-        # a backward through V renders, which the 32-view bucket cannot afford.
-        # train_finesplat overwrites this from train.loss_views.context and pools the
-        # per-step renders with the target views into a single loss.
+        # Context views re-rendered with gradients per forward so the loss can score them
+        # (int for every view count, or dict view_count -> quota); 0 disables.
         self.context_loss_views = conf.get("context_loss_views", 0)
-        # Set by evaluation code that re-renders each step (EPA); off during training so
-        # the Gaussians of earlier steps are freed as soon as their render is taken.
         self.keep_step_gaussians = False
 
         err = conf["error"]
@@ -738,13 +609,9 @@ class FineSplat(nn.Module):
                 depth=err.get("global_attn_blocks", 1),
             ) if err.get("global_attn", False) else None
         )
-        # B': one point per Gaussian carrying (g raw 23 | parent token 512 | error 256),
-        # fused directly - the ReSplat feature recipe on the serialized world backbone.
+        # gaussian_token_feat: per-Gaussian points carry (raw params | parent token | error);
+        # gaussian_delta_z: same points, output is a token residual (G features concatenated in (ph, pw) order)
         self.gaussian_token_feat = self.mode == "gaussian" and conf.get("gaussian_token_feat", False)
-        # B'' (gstoken_DeltaZ): same per-Gaussian points and features as B', but the output
-        # is a token residual - the four backbone features of a token are concatenated (the
-        # (ph, pw) slot order is fixed by the unfold) and mapped to delta-token 1024, which
-        # 2Xplat's frozen head decodes. Gaussian-level receptive field, token-level output.
         self.gaussian_delta_z = self.gaussian_token_feat and conf.get("gaussian_delta_z", False)
         point_dim = model.dim3 if self.mode == "token" else self.raw_dim(model)
         if self.gaussian_token_feat:
@@ -756,19 +623,15 @@ class FineSplat(nn.Module):
                 aux_channels=conf.get("token_feat_channels", 512), raw_input=True)
             if self.gaussian_delta_z:
                 self.token_head = nn.Linear(self.G * conf["network"]["width"], model.dim3)
-                nn.init.zeros_(self.token_head.weight)  # step 0 reproduces the frozen model
+                nn.init.zeros_(self.token_head.weight)
                 nn.init.zeros_(self.token_head.bias)
         else:
             self.stage2 = Stage2(conf["network"], point_dim, err["lift_channels"], point_dim)
         self._logged = False
 
     def _to_gaussians(self, x: torch.Tensor, v: int) -> torch.Tensor:
-        """Broadcast a per-token tensor (B, K, C) onto its Gaussians in unfold order.
-
-        A token's four Gaussians are unfolded as (v hh ph ww pw) - ph sits between hh and
-        ww, so they are not adjacent and a plain repeat would pair most Gaussians with a
-        neighbouring token.
-        """
+        """Broadcast a per-token tensor (B, K, C) onto its Gaussians in the (v hh ph ww pw) unfold
+        order: a token's Gaussians are not adjacent, so a plain repeat would be wrong."""
         side = self.image_size // self.model.appearance_expert.patch_size
         g = self.model.appearance_expert.gaussian_side
         x = rearrange(x, "b (v hh ww) c -> b v hh ww c", v=v, hh=side, ww=side)
@@ -792,9 +655,7 @@ class FineSplat(nn.Module):
     def train(self, mode: bool = True):
         super().train(mode)
         if not self.e2e:
-            self.model.eval()  # frozen: never leave eval
-        # in e2e the base follows `mode`; TwoExpertModel.train() itself keeps its loss
-        # modules in eval.
+            self.model.eval()
         return self
 
     def trainable_parameters(self):
@@ -802,12 +663,7 @@ class FineSplat(nn.Module):
 
     def _render_views(self, gaussians, c2w, fxfycxcy, with_grad: bool, render_mode="RGB",
                       size: int | None = None):
-        """Render every view. Returns (B,V,3,H,W) and, for "RGB+ED", (B,V,H,W) depth.
-
-        ``size`` overrides the training resolution. Gaussians carry detail a 224-pixel frame
-        discards, so visualisation renders larger; ``fxfycxcy`` has to be scaled to match, as
-        this only changes the raster size.
-        """
+        """Render every view -> (B,V,3,H,W) rgb and, for "RGB+ED", (B,V,H,W) depth; ``size`` sets the raster size only."""
         model = self.model
         h = w = self.image_size if size is None else size
         b, v = c2w.shape[:2]
@@ -823,8 +679,7 @@ class FineSplat(nn.Module):
             )
             return out.permute(0, 1, 4, 2, 3).contiguous(), None
 
-        # Sequential: gsplat rasterizes one view at a time, and "RGB+ED" is not exposed
-        # through GaussianRenderer.apply.
+        # "RGB+ED" is not exposed through GaussianRenderer.apply: rasterize one view at a time
         rows = []
         with torch.no_grad(), torch.autocast(device_type="cuda", enabled=False):
             for ib in range(b):
@@ -840,7 +695,7 @@ class FineSplat(nn.Module):
                         w, h, model.sh_degree, model.near_plane, model.far_plane, render_mode,
                     ))
                 rows.append(torch.cat(outs, dim=0))
-        out = torch.stack(rows, dim=0)  # (B, V, H, W, C)
+        out = torch.stack(rows, dim=0)
         rgb = out[..., :3].permute(0, 1, 4, 2, 3).contiguous()
         depth = out[..., 3] if out.shape[-1] == 4 else None
         return rgb, depth
@@ -849,8 +704,6 @@ class FineSplat(nn.Module):
         model, expert = self.model, self.model.appearance_expert
         h = w = self.image_size
 
-        # e2e training needs gradients through the base encode (and through the predicted
-        # cameras into DA3); otherwise the base stays under no_grad as before.
         base_ctx = (contextlib.nullcontext() if (self.e2e and self.training)
                     else torch.no_grad())
         with base_ctx:
@@ -869,46 +722,28 @@ class FineSplat(nn.Module):
             )
         render0 = None
         if self.e2e and self.training:
-            # 2Xplat's own objective on the Stage-1 prediction (step 0), so Stage 1 keeps
-            # being supervised directly and not only through the Stage-2 steps.
             with torch.autocast(device_type="cuda", enabled=False):
                 render0, _ = self._render_views(
                     g0, cameras.pred_t_c2w, cameras.pred_t_fxfycxcy, with_grad=True,
                 )
 
-        # K is the number of corrected points: tokens in token mode, Gaussians in gaussian
-        # mode. self.side is set per mode in __init__ (56 vs 112), so the check holds in both.
         B = tokens.shape[0]
         K = tokens.shape[1] if self.mode == "token" else raw.shape[1]
         assert K == v * self.side ** 2, (K, v, self.side)
         gt_ctx = rearrange(input_data["image"], "b v c h w -> (b v) c h w").float()
-        gt_feat = self.error.features(gt_ctx)  # constant across steps
-        # image_embed="mvp_s1": reuse the frozen base's stage-1 patch tokens (its own 4x4
-        # patch embedding of this view) instead of embedding the raw image ourselves.
+        gt_feat = self.error.features(gt_ctx)
         mvp_feat = None
         if self.error.image_embed == "mvp_s1":
             gh = self.image_size // expert.patch_size
             mvp_feat = rearrange(s1.detach(), "n (hh ww) d -> n d hh ww", hh=gh, ww=gh)
-        # The image half of the error map reads only the context views, which do not change
-        # between steps, so it is projected once here rather than inside every step.
         img_map = self.error.image_map(gt_ctx, mvp_feat)
 
-        # In gaussian mode every Gaussian is its own point, so the coordinate is exact
-        # rather than the mean of the four Gaussians a token decodes into.
         points = tokens if self.mode == "token" else raw.float()
-        # The parent token does not change across steps (only the Gaussians move), so its
-        # broadcast is computed once. Detached like ReSplat's prev-gaussian inputs. In
-        # delta-z mode the tokens DO change every step, so aux is rebuilt inside the loop.
-        aux = (self._to_gaussians(self.token_broadcast(tokens), v)
+        aux =(self._to_gaussians(self.token_broadcast(tokens), v)
                if self.gaussian_token_feat and not self.gaussian_delta_z else None)
         g, renders, n_vis = g0, [], None
-        # Per-step Gaussians are only kept when something downstream needs to re-render
-        # them - EPA scores each step by realigning the target poses against that step's
-        # own Gaussians, which the rendered images alone cannot support.
         gaussians_all = []
         ctx_renders, ctx_indices = [], None
-        # An int applies to every view-count bucket; a dict maps the bucket's view count to
-        # its own quota (train_finesplat builds it from loss_views.context as a list).
         k_ctx = (self.context_loss_views if isinstance(self.context_loss_views, int)
                  else self.context_loss_views.get(v, 0))
         if k_ctx and self.training:
@@ -920,10 +755,7 @@ class FineSplat(nn.Module):
                     with_grad=False, render_mode="RGB+ED",
                 )
             if ctx_indices is not None:
-                # A second, differentiable render of the sampled context views. The one
-                # above feeds the error map and stays detached: letting the loss reach the
-                # Gaussians through the map as well would supervise the conditioning path
-                # rather than the prediction.
+                # separate differentiable render: the error-map render above must stay detached
                 with torch.autocast(device_type="cuda", enabled=False):
                     sub, _ = self._render_views(
                         g, cameras.pred_i_c2w[:, ctx_indices],
@@ -958,21 +790,16 @@ class FineSplat(nn.Module):
             else:
                 points = points + self._run_stage2(points, err, grids)
 
-            # Decode under the ambient autocast, exactly as src/commands/inference.py does,
-            # so that delta = 0 reproduces 2Xplat's own numbers bit for bit. ZipSplat forces
-            # its head to fp32; matching 2Xplat's evaluation protocol matters more here,
-            # since the fp32 head shifted PSNR by +0.06 - a seventh of Stage 2's gain.
+            # Decode under the ambient autocast (as inference does) so a zero residual
+            # reproduces Stage 1 bit for bit.
             if self.mode == "token":
                 g = expert.decode_from_tokens(
                     points, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
                     cameras.pred_t_c2w, h, w,
                 )
             else:
-                # Residual on the pre-activation parameters: the Gaussian head is not re-run,
-                # only the activations, so the offset stays in its sub-cell, depth stays
-                # inside (0, max_dist) and scale stays clamped. In delta-z mode the residual
-                # landed on the tokens instead, so the raw parameters (which are also the
-                # next step's point features) are re-decoded from them through the frozen head.
+                # residual on the pre-activation parameters: only the activations are re-run,
+                # so every bound they impose still holds; delta-z re-decodes raw from the tokens
                 if self.gaussian_delta_z:
                     points = expert.raw_from_tokens(tokens, v, h, w).float()
                 g = expert.gaussians_from_raw(
@@ -986,9 +813,7 @@ class FineSplat(nn.Module):
             renders.append(render)
             if self.keep_step_gaussians:
                 gaussians_all.append(g)
-            # Each step is supervised on its own render and starts from a detached state, so
-            # it learns to improve whatever it is handed instead of relying on gradients
-            # reaching back through every earlier step.
+            # each step is supervised on its own render and starts from a detached state
             points = points.detach()
             if self.gaussian_delta_z:
                 tokens = tokens.detach()
@@ -998,9 +823,6 @@ class FineSplat(nn.Module):
                   f"{self.stage2.window}, {self.num_steps} step(s) (batch of {B}); "
                   f"tokens visible in {n_vis.mean():.2f} views on average", flush=True)
             self._logged = True
-        # "points" is what the head decodes: the corrected tokens in token mode, the raw
-        # Gaussian parameters in gaussian mode. Exposed so the displacement it represents
-        # can be compared against the one test-time optimisation finds for the same scene.
         return {"render": renders[-1], "renders": renders, "gaussians": g,
                 "gaussians_all": gaussians_all, "gaussians_base": g0,
                 "render0": render0,
@@ -1014,12 +836,8 @@ class FineSplat(nn.Module):
         return self.stage2(*args, **kwargs)
 
     def _token_coord(self, xyz: torch.Tensor, v: int) -> torch.Tensor:
-        """Mean position of each token's Gaussians, (B, N, 3) -> (B, K, 3).
-
-        2Xplat unfolds a token's Gaussians as ``(v hh ph ww pw)``, so ph sits between hh and
-        ww: a token's four Gaussians are ww apart, not adjacent. Reshaping to (K, G) and
-        averaging would mix each token with its neighbour along ww.
-        """
+        """Mean position of each token's Gaussians, (B, N, 3) -> (B, K, 3), honouring the
+        (v hh ph ww pw) unfold order (a plain (K, G) reshape would mix neighbouring tokens)."""
         side = self.image_size // self.model.appearance_expert.patch_size
         g = self.model.appearance_expert.gaussian_side
         xyz = rearrange(xyz, "b (v hh ph ww pw) c -> b (v hh ww) (ph pw) c",
@@ -1027,16 +845,8 @@ class FineSplat(nn.Module):
         return xyz.mean(dim=2)
 
     def _grids(self, coord, g0, b: int, k: int):
-        """World-space grid for the serialization: the scene bounding box of the frozen
-        Gaussians, split ``grid_resolution`` ways per axis. One point cloud per scene, so
-        serialized windows mix points from every view - each token is visible in 3-4 views
-        on average and their world positions nearly coincide, which is where cross-view
-        coordination happens. Returned as a single-entry list (the blocks cycle over it).
-
-        A per-view frustum grid and an alternating frustum/world schedule were tried and
-        retired; both measured at or below this (frustum +0.86, alternate +1.01, world
-        +1.16 on the test watchlist).
-        """
+        """World-space serialization grid: the Stage-1 Gaussians' bounding box split
+        ``grid_resolution`` ways per axis, one point cloud per scene -> [(grid, offset)]."""
         lo = g0.xyz.amin(dim=-2, keepdim=True)
         span = (g0.xyz.amax(dim=-2, keepdim=True) - lo).clamp(min=EPS)
         res = self.conf["network"]["grid_resolution"]

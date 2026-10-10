@@ -1,13 +1,9 @@
-"""2Xplat two-expert model: a DA3 geometry expert and a patch-aligned appearance expert.
+"""Stage 1 of FineSplat: the 2Xplat feed-forward 3DGS model.
 
-Every patch is split into a ``gaussian_side x gaussian_side`` sub-grid: each
-Gaussian owns a ``gaussian_stride x gaussian_stride`` pixel cell and predicts a
-bounded image-space offset that moves its ray anywhere inside that cell. With
-``patch_size: 4`` and ``gaussians_per_patch: 4`` this yields a 4x reduction in
-Gaussian count against one Gaussian per pixel, since the offsets let each
-Gaussian land where it matters instead of on a fixed lattice.
-``gaussians_per_patch`` defaults to ``patch_size ** 2``, i.e. one per pixel.
-"""
+A DA3 geometry expert predicts cameras; an MVP appearance expert maps ray-encoded
+images to a 3D Gaussian field. Each patch is a ``gaussian_side x gaussian_side``
+sub-grid of Gaussians; each Gaussian owns a ``gaussian_stride x gaussian_stride``
+pixel cell and predicts a bounded image-space offset inside it."""
 
 import os
 import torch
@@ -33,12 +29,7 @@ from src.utils.camera_utils import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
 def _init_weights(module: nn.Module) -> None:
-    """Initialise Linear and Embedding weights with N(0, 0.02) and reset norm layers."""
     if isinstance(module, nn.Linear):
         torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         if module.bias is not None:
@@ -53,14 +44,9 @@ def _fit_similarity(
     source_c2w: torch.Tensor,     # (B, V, 4, 4)
     reference_c2w: torch.Tensor,  # (B, V, 4, 4)
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Fit the Sim(3) that maps ``source`` context poses onto ``reference`` ones.
-
-    Rotation is an orthogonal Procrustes fit of the camera orientations; scale and
-    translation are least-squares fits of the camera centers, matching
-    ``ablations.refinement.align_targets``. The transform is a gauge correction, so
-    it is fitted from detached poses: the singular values of a near-rotation matrix
-    are nearly equal, which makes the SVD backward ill-conditioned.
-    """
+    """Fit the Sim(3) (rotation (B, 3, 3), scale (B,), translation (B, 3)) that maps
+    ``source`` context poses onto ``reference`` ones. Fitted on detached poses: it is a
+    gauge correction, and the SVD backward of a near-rotation matrix is ill-conditioned."""
     source_c2w, reference_c2w = source_c2w.detach(), reference_c2w.detach()
     b = source_c2w.shape[0]
 
@@ -68,7 +54,7 @@ def _fit_similarity(
     u, _, vh = torch.linalg.svd((ref_rot @ src_rot.transpose(-1, -2)).sum(dim=1))
     correction = torch.eye(3, dtype=u.dtype, device=u.device).expand(b, 3, 3).clone()
     correction[:, 2, 2] = torch.det(u @ vh)
-    rotation = u @ correction @ vh                                    # (B, 3, 3)
+    rotation = u @ correction @ vh
 
     src_c, ref_c = source_c2w[:, :, :3, 3], reference_c2w[:, :, :3, 3]
     src_mean, ref_mean = src_c.mean(dim=1), ref_c.mean(dim=1)
@@ -76,32 +62,29 @@ def _fit_similarity(
     scale = (
         (rotated * (ref_c - ref_mean[:, None])).sum(dim=(1, 2))
         / rotated.square().sum(dim=(1, 2)).clamp_min(1e-12)
-    )                                                                 # (B,)
+    )
     translation = ref_mean - scale[:, None] * (src_mean[:, None] @ rotation.transpose(-1, -2))[:, 0]
     return rotation, scale, translation
 
 
 def _apply_similarity(
-    c2w: torch.Tensor,          # (B, N, 4, 4)
-    rotation: torch.Tensor,     # (B, 3, 3)
-    scale: torch.Tensor,        # (B,)
-    translation: torch.Tensor,  # (B, 3)
+    c2w: torch.Tensor,
+    rotation: torch.Tensor,
+    scale: torch.Tensor,
+    translation: torch.Tensor,
 ) -> torch.Tensor:
-    """Apply ``c -> scale * rotation @ c + translation`` to a batch of camera poses."""
+    """Apply ``c -> scale * rotation @ c + translation`` to c2w (B, N, 4, 4), with
+    rotation (B, 3, 3), scale (B,), translation (B, 3) as from ``_fit_similarity``."""
     rot = rotation[:, None] @ c2w[:, :, :3, :3]
     trans = (
         scale[:, None, None] * (c2w[:, :, :3, 3] @ rotation.transpose(-1, -2))
         + translation[:, None]
     )
-    # Avoid in-place writes on sliced views to keep autograd version tracking consistent.
+    # Out-of-place: in-place writes on sliced views break autograd version tracking.
     return torch.cat(
         [torch.cat([rot, trans.unsqueeze(-1)], dim=-1), c2w[:, :, 3:, :]], dim=-2,
     )
 
-
-# ---------------------------------------------------------------------------
-# Structured output types
-# ---------------------------------------------------------------------------
 
 @dataclass
 class CameraBundle:
@@ -115,14 +98,8 @@ class CameraBundle:
     gt_t_c2w:        torch.Tensor  # (B, T, 4, 4)
 
 
-# ---------------------------------------------------------------------------
-# Geometry Expert (DepthAnything3)
-# ---------------------------------------------------------------------------
-
 class GeometryExpert:
-    """
-    Predicts camera poses and intrinsics for all views using DA3.
-    """
+    """Predicts poses and intrinsics for all views with DA3, normalized to the scene scale."""
 
     def __init__(
         self,
@@ -131,14 +108,8 @@ class GeometryExpert:
         inference_mode: bool,
         camera_mode: str | None,
     ):
-        """
-        Args:
-            pose_regressor: DA3 model used to predict poses and intrinsics.
-            scene_scale: Denominator for translation normalisation (from data config).
-            inference_mode: If True, ``camera_mode`` controls which cameras are used.
-            camera_mode: One of ``gt_pose_gt_intr``, ``pred_pose_gt_intr``,
-                ``pred_pose_pred_intr``; ignored during training.
-        """
+        """``camera_mode`` (inference only) selects GT vs. predicted cameras:
+        ``gt_pose_gt_intr``, ``pred_pose_gt_intr`` or ``pred_pose_pred_intr``."""
         self.pose_regressor = pose_regressor
         self.scene_scale = scene_scale
         self.inference_mode = inference_mode
@@ -156,7 +127,7 @@ class GeometryExpert:
         gt_t_c2w = target_data_dict["c2w"].float()
 
         if self.inference_mode and self.camera_mode == "gt_pose_gt_intr":
-            # Fully posed: _select_cameras would discard every DA3 output, so skip DA3.
+            # Fully posed: skip DA3, _select_cameras would discard its output anyway.
             return CameraBundle(
                 pred_i_fxfycxcy=gt_i_fxfycxcy, pred_i_c2w=gt_i_c2w,
                 pred_t_fxfycxcy=gt_t_fxfycxcy, pred_t_c2w=gt_t_c2w,
@@ -192,21 +163,12 @@ class GeometryExpert:
         target_images: torch.Tensor,
         gt_fxfycxcy: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Predict cameras for all views, target-independently at inference time.
-
-        At inference the context cameras come from a context-only pass, so they do
-        not depend on the target images; a second pass over context + target images
-        supplies the target poses, which are then canonicalized onto the
-        context-only gauge. During training a single joint pass is used.
-        """
+        """Predict cameras for all views. At inference the context cameras come from a
+        context-only pass; a context+target pass gives the target poses, which are mapped
+        onto the context-only gauge via Sim(3). Training uses one joint pass."""
         if not self.inference_mode or self.pose_regressor.training:
-            # Training (including end-to-end FineSplat training, where the regressor is in train
-            # mode): one joint pass over context + target, exactly as 2Xplat's own training.
-            # The two-pass protocol below keeps eval context cameras independent of the
-            # target images; at training it would only double DA3's memory and time.
             return self._forward_and_normalize(input_images, target_images, gt_fxfycxcy)
 
-        # context-only for the first pass
         v = input_images.shape[1]
         context = self._forward_and_normalize(
             input_images, input_images[:, :0], gt_fxfycxcy[:, :v],
@@ -214,12 +176,10 @@ class GeometryExpert:
         if target_images.shape[1] == 0:
             return context
 
-        # context + target images for the second pass, which is used to canonicalize the target poses
         _, pass2_i_c2w, t_fxfycxcy, t_c2w = self._forward_and_normalize(
             input_images, target_images, gt_fxfycxcy,
         )
 
-        # target poses are canonicalized to the context cameras, which are predicted independently of the target images
         with torch.autocast(device_type="cuda", enabled=False):
             rotation, scale, translation = _fit_similarity(pass2_i_c2w, context[1])
             t_c2w = _apply_similarity(t_c2w, rotation, scale, translation)
@@ -260,7 +220,6 @@ class GeometryExpert:
         return i_fxfycxcy, i_c2w, t_fxfycxcy, t_c2w
 
     def _forward_pose_regressor(self, images: torch.Tensor, gt_fxfycxcy: torch.Tensor) -> dict:
-        """Forward the pose regressor (DA3 predicts poses and intrinsics itself)."""
         return self.pose_regressor(images)
 
     @staticmethod
@@ -269,12 +228,8 @@ class GeometryExpert:
         target_c2ws: torch.Tensor | None = None,  # (T, 4, 4) or (B, T, 4, 4)
         scene_scale: float = 1.0,
     ):
-        """
-        Match scene normalization used in dataset.py:
-        1) Build canonical frame from input poses only (Gram-Schmidt).
-        2) Apply same transform to both input/target poses.
-        3) Scale translations by max abs translation from normalized input poses.
-        """
+        """Scene normalization as in dataset.py: Gram-Schmidt canonical frame from the input
+        poses, applied to input and target, then translations scaled by max |t| of the inputs."""
         squeeze_input = input_c2ws.ndim == 3
         squeeze_target = target_c2ws is not None and target_c2ws.ndim == 3
 
@@ -283,9 +238,9 @@ class GeometryExpert:
         if target_c2ws is not None and squeeze_target:
             target_c2ws = target_c2ws.unsqueeze(0)
 
-        position_avg = input_c2ws[:, :, :3, 3].mean(dim=1)   # (B, 3)
-        forward_avg = input_c2ws[:, :, :3, 2].mean(dim=1)    # (B, 3)
-        down_avg = input_c2ws[:, :, :3, 1].mean(dim=1)       # (B, 3)
+        position_avg = input_c2ws[:, :, :3, 3].mean(dim=1)
+        forward_avg = input_c2ws[:, :, :3, 2].mean(dim=1)
+        down_avg = input_c2ws[:, :, :3, 1].mean(dim=1)
 
         forward_avg = F.normalize(forward_avg, dim=-1)
         down_proj = (down_avg * forward_avg).sum(dim=-1, keepdim=True) * forward_avg
@@ -309,8 +264,7 @@ class GeometryExpert:
         scene_extent = translations.abs().amax(dim=(1, 2))
 
         scale = 1.0 / (scene_scale * scene_extent)
-        # Avoid in-place writes on sliced views (e.g. [..., :3, 3]) to keep
-        # autograd version tracking consistent.
+        # Out-of-place: in-place writes on sliced views break autograd version tracking.
         input_scaled_t = input_c2ws[:, :, :3, 3] * scale[:, None, None]
         input_c2ws = torch.cat(
             [
@@ -362,18 +316,14 @@ class GeometryExpert:
         )
 
 
-# ---------------------------------------------------------------------------
-# Appearance Expert (MVP)
-# ---------------------------------------------------------------------------
-
 class AppearanceExpert:
-    """
-    Three-stage transformer (MVP) that maps ray-encoded images to a 3D Gaussian field.
-    """
+    """MVP three-stage transformer mapping ray-encoded images to a 3D Gaussian field.
+
+    Holds non-owning references to modules registered on ``TwoExpertModel``. ``gaussian_side``
+    is the per-patch sub-grid side; ``gaussian_stride`` the pixels per side of each cell."""
 
     def __init__(
         self,
-        # nn.Module references (owned by TwoExpertModel)
         image_tokenizer: nn.Sequential,
         stage1: nn.ModuleList,
         stage2: nn.ModuleList,
@@ -387,7 +337,6 @@ class AppearanceExpert:
         dpt_head: DPTHead,
         gaussian_decoder: nn.Sequential,
         register_token_init: nn.Parameter,
-        # scalar hyper-parameters
         patch_size: int,
         gaussian_side: int,
         gaussian_stride: int,
@@ -403,14 +352,6 @@ class AppearanceExpert:
         max_dist: float,
         inference_mode: bool,
     ):
-        """Store references to all nn.Module components and scalar hyper-parameters.
-
-        All nn.Module arguments are owned and registered by ``TwoExpertModel``;
-        this class holds non-owning references and orchestrates the forward pass.
-
-        ``gaussian_side`` is the side length of the per-patch Gaussian sub-grid and
-        ``gaussian_stride`` the number of pixels per side of the cell each Gaussian owns.
-        """
         self.image_tokenizer = image_tokenizer
         self.stage1 = stage1
         self.stage2 = stage2
@@ -540,49 +481,33 @@ class AppearanceExpert:
         w: int,
         image_offset: torch.Tensor,  # (B, V*gh*gw, 2)
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute rays through sub-cell centers, displaced by a learned offset.
-
-        The offset is squashed to ``+-0.5`` of a cell, so a Gaussian can never
-        leave the cell it was assigned. Intrinsics are consumed at the input
-        image resolution, matching the grid units ``(idx + 0.5) * stride``.
-
-        Args:
-            fxfycxcy: Intrinsics [b, v, 4] as [fx, fy, cx, cy], in input-image pixels.
-            c2w: Camera-to-world matrices [b, v, 4, 4].
-            h: Image height in pixels.
-            w: Image width in pixels.
-            image_offset: Raw (pre-tanh) offsets [b, v*gh*gw, 2] in (x, y) order.
-
-        Returns:
-            ray_o (torch.Tensor): Ray origins with shape (b, v*gh*gw, 3).
-            ray_d (torch.Tensor): Normalized ray directions with shape (b, v*gh*gw, 3).
-        """
+        """Rays through sub-cell centers displaced by the (pre-tanh, xy) offset; returns
+        ``ray_o, ray_d`` of shape (B, V*gh*gw, 3). The offset is squashed to +-0.5 cell so a
+        Gaussian never leaves its cell; intrinsics are in input-image pixels like the grid."""
         b, v = fxfycxcy.size(0), fxfycxcy.size(1)
         stride = self.gaussian_stride
         gh, gw = h // stride, w // stride
 
-        # Bounded to half a cell so each ray stays inside its own sub-cell.
         offset_px = 0.5 * stride * image_offset.tanh()
         offset_px = offset_px.reshape(b * v, gh * gw, 2)
 
-        fxfycxcy = fxfycxcy.reshape(b * v, 4)               # [b*v, 4]
-        c2w = c2w.reshape(b * v, 4, 4)                      # [b*v, 4, 4]
+        fxfycxcy = fxfycxcy.reshape(b * v, 4)
+        c2w = c2w.reshape(b * v, 4, 4)
 
-        idx_x = torch.arange(gw, device=c2w.device)[None, :].expand(gh, -1)  # [gh, gw]
-        idx_y = torch.arange(gh, device=c2w.device)[:, None].expand(-1, gw)  # [gh, gw]
+        idx_x = torch.arange(gw, device=c2w.device)[None, :].expand(gh, -1)
+        idx_y = torch.arange(gh, device=c2w.device)[:, None].expand(-1, gw)
 
-        # Cell centers in input-image pixels, then displaced by the offset.
         x = ((idx_x.flatten() + 0.5) * stride + offset_px[..., 0]
-             - fxfycxcy[:, 2:3]) / fxfycxcy[:, 0:1]         # [b*v, gh*gw]
+             - fxfycxcy[:, 2:3]) / fxfycxcy[:, 0:1]
         y = ((idx_y.flatten() + 0.5) * stride + offset_px[..., 1]
-             - fxfycxcy[:, 3:4]) / fxfycxcy[:, 1:2]         # [b*v, gh*gw]
-        z = torch.ones_like(x)                              # [b*v, gh*gw]
+             - fxfycxcy[:, 3:4]) / fxfycxcy[:, 1:2]
+        z = torch.ones_like(x)
 
-        ray_d = torch.stack([x, y, z], dim=1)               # [b*v, 3, gh*gw]
-        ray_d = torch.bmm(c2w[:, :3, :3], ray_d)            # [b*v, 3, gh*gw]
+        ray_d = torch.stack([x, y, z], dim=1)
+        ray_d = torch.bmm(c2w[:, :3, :3], ray_d)
         ray_d = ray_d / torch.norm(ray_d, dim=1, keepdim=True)
 
-        ray_o = c2w[:, :3, 3:4].expand(b * v, -1, gh * gw)  # [b*v, 3, gh*gw]
+        ray_o = c2w[:, :3, 3:4].expand(b * v, -1, gh * gw)
 
         ray_o = rearrange(ray_o, "(b v) c n -> b (v n) c", b=b, v=v)
         ray_d = rearrange(ray_d, "(b v) c n -> b (v n) c", b=b, v=v)
@@ -600,12 +525,6 @@ class AppearanceExpert:
         h: int,
         w: int,
     ) -> GaussianField:
-        """Fuse multi-scale tokens with DPT head and decode into 3D Gaussian parameters.
-
-        Each patch token unfolds into ``gaussians_per_patch`` Gaussians carrying an
-        explicit depth channel plus a 2-channel image-space offset, which anchors
-        each Gaussian to a ray through its own sub-cell.
-        """
         output_tokens = self.fuse_tokens(
             s1_patch_tokens, s2_patch_tokens, s3_patch_tokens, i_c2w.shape[1], h, w,
         )
@@ -620,11 +539,8 @@ class AppearanceExpert:
         h: int,
         w: int,
     ) -> torch.Tensor:
-        """Fuse the three stages with the DPT head into per-patch tokens (B, V*L, dim3).
-
-        These are the tokens immediately before ``gaussian_decoder``, i.e. the only
-        thing test-time optimization (``src.model.tto``) is allowed to change.
-        """
+        """Fuse the three stages with the DPT head into per-patch tokens (B, V*L, dim3):
+        the tokens right before ``gaussian_decoder``, which Stage 2 and TTO operate on."""
         output_tokens = self.dpt_head(
             [s1_patch_tokens, s2_patch_tokens, s3_patch_tokens], [h, w], self.patch_size,
         )
@@ -644,14 +560,8 @@ class AppearanceExpert:
         return self.gaussians_from_raw(raw, i_fxfycxcy, i_c2w, t_c2w, h, w)
 
     def raw_from_tokens(self, output_tokens: torch.Tensor, v: int, h: int, w: int) -> torch.Tensor:
-        """Run the Gaussian head and unfold each patch token into its Gaussians.
-
-        Returns the raw, pre-activation parameters (B, N, 23) laid out as
-        ``[depth 1 | image_offset 2 | feature C | scale 3 | rotation 4 | opacity O]``.
-        This is the representation ``src.model.stage2`` corrects in Gaussian mode:
-        a residual added here keeps every bound the activations impose - the offset stays
-        inside its sub-cell, depth stays inside ``(0, max_dist)``, scale stays clamped.
-        """
+        """Gaussian head + unfold: raw pre-activation parameters (B, N, 23) laid out as
+        ``[depth 1 | image_offset 2 | feature C | scale 3 | rotation 4 | opacity O]``."""
         gaussians = self.gaussian_decoder(output_tokens)
         return rearrange(
             gaussians, "b (v hh ww) (ph pw d) -> b (v hh ph ww pw) d",
@@ -689,9 +599,8 @@ class AppearanceExpert:
                 i_fxfycxcy, i_c2w, h, w, image_offset,
             )
             scale = (scale + self.scale_bias).clamp(max=self.scale_max)
-            # Bias only the DC (sh0) component; higher-order terms are bias-free.
-            # Out-of-place: `opacity` is a view from torch.split, and autograd
-            # rejects in-place writes into it once tokens require grad (TTO).
+            # Bias only the DC (sh0) opacity. Out-of-place: `opacity` is a torch.split
+            # view, and in-place writes into it fail once tokens require grad (TTO).
             dc_bias = torch.zeros_like(opacity)
             dc_bias[..., 0] = self.opacity_bias
             opacity = opacity + dc_bias
@@ -719,13 +628,11 @@ class AppearanceExpert:
         )
 
     def _run_stage1_blocks(self, x: torch.Tensor, info: dict | None) -> torch.Tensor:
-        """Run all stage-1 transformer blocks with per-view self-attention."""
         for block in self.stage1:
             x = block(x, False, 1, info)
         return x
 
     def _run_stage2_blocks(self, x: torch.Tensor, info: dict) -> torch.Tensor:
-        """Run stage-2 blocks, alternating between per-view and grouped cross-view attention."""
         g = self.group_size
         v = info["num_input_views"]
         for i, block in enumerate(self.stage2):
@@ -738,7 +645,6 @@ class AppearanceExpert:
         return rearrange(x, "(b g) (v l) d -> (b g v) l d", g=v // g, v=g)
 
     def _run_stage3_blocks(self, x: torch.Tensor, info: dict) -> torch.Tensor:
-        """Run stage-3 blocks, alternating between per-view and global cross-view attention."""
         v = info["num_input_views"]
         for i, block in enumerate(self.stage3):
             if i % 2 == 0:
@@ -750,23 +656,13 @@ class AppearanceExpert:
         return rearrange(x, "b (v l) d -> (b v) l d", v=v)
 
 
-# ---------------------------------------------------------------------------
-# TwoExpertModel — compositor
-# ---------------------------------------------------------------------------
-
 class TwoExpertModel(nn.Module):
-    """Compositor that wires the GeometryExpert and AppearanceExpert together."""
+    """Stage 1 model: wires the GeometryExpert and AppearanceExpert together."""
 
     def __init__(self, config: Any) -> None:
-        """Initialise all sub-modules and compose experts from the OmegaConf config.
-
-        Args:
-            config: OmegaConf config object. Presence of a ``config.inference`` key
-                selects inference mode; absence means training mode.
-        """
+        """A ``config.inference`` section selects inference mode; its absence means training."""
         super().__init__()
 
-        # Extract all config values (no self.config stored)
         self.dim1 = config.model.dim1
         self.dim2 = config.model.dim2
         self.dim3 = config.model.dim3
@@ -789,8 +685,7 @@ class TwoExpertModel(nn.Module):
         self.opacity_bias = config.model.gaussians.opacity_bias
         self.max_dist = config.model.gaussians.max_dist
         self.da_model_name = config.model.da_model_name
-        # 0 disables gradient checkpointing in the DA3 backbone, N checkpoints every N-th
-        # block. Only read when a `training` section exists (end-to-end FineSplat training).
+        # training.grad_checkpoint_every: 0 disables DA3 gradient checkpointing, N checkpoints every N-th block.
         self.grad_ckpt_every = (
             config.training.get("grad_checkpoint_every", 0) if hasattr(config, "training") else 0
         )
@@ -804,8 +699,7 @@ class TwoExpertModel(nn.Module):
             getattr(config.inference, "camera_mode", "pred_pose_pred_intr")
             if self.inference_mode else None
         )
-        # inference.epa_steps: Adam steps of EPA (pose_optimization). The paper's protocol is
-        # 200 (the default here); the original 2Xplat and YoNoSplat use 100.
+        # inference.epa_steps: Adam steps of EPA (evaluation-time pose alignment); default 200.
         epa_steps = getattr(config.inference, "epa_steps", None) if hasattr(config, "inference") else None
         self.epa_steps = 200 if epa_steps is None else int(epa_steps)
         self.use_pose_optimization = bool(
@@ -813,12 +707,10 @@ class TwoExpertModel(nn.Module):
             if self.inference_mode else False
         )
 
-        # Derived from SH degree config; computed once here, not on every forward.
         self.color_dim = 3 * (self.sh_degree + 1) ** 2
         self.opacity_dim = 1 * (self.opacity_degree + 1) ** 2
 
-        # Gaussians per patch, laid out as a gaussian_side x gaussian_side
-        # sub-grid. Defaults to patch_size ** 2, i.e. one Gaussian per pixel.
+        # Gaussians per patch as a gaussian_side x gaussian_side sub-grid; default one per pixel.
         self.gaussians_per_patch = getattr(
             config.model, "gaussians_per_patch", self.patch_size ** 2,
         )
@@ -829,11 +721,9 @@ class TwoExpertModel(nn.Module):
             "patch_size must be divisible by sqrt(gaussians_per_patch)"
         self.gaussian_stride = self.patch_size // self.gaussian_side
 
-        # Build all nn.Module components (names must match checkpoint keys)
         self._build_geometry_modules()
         self._build_appearance_modules()
 
-        # Compose experts
         self.geometry_expert = GeometryExpert(
             pose_regressor=self.pose_regressor,
             scene_scale=self.scene_scale,
@@ -874,15 +764,9 @@ class TwoExpertModel(nn.Module):
             from src.model.loss import LossComputer
             self.loss_computer = LossComputer(config)
 
-    # --- Module builders ---
-
     def _build_appearance_modules(self):
-        """Build all nn.Module components for the appearance expert.
-
-        Called from ``__init__`` after ``nn.Module.__init__``, so the marker buffer
-        is registered before any checkpoint is loaded.
-        """
-        # Marks a state dict as already using the depth + image_offset layout.
+        """Build the appearance-expert modules (names must match checkpoint keys)."""
+        # Marks a state dict as using the depth + image_offset layout.
         self.register_buffer("_image_offset_version", torch.tensor(1))
 
         self.image_tokenizer = self._create_patch_tokenizer(
@@ -941,12 +825,9 @@ class TwoExpertModel(nn.Module):
             checkpoint = torch.load(self.mvp_weights_path, map_location="cpu", weights_only=True)
             state_dict = checkpoint["ema"] if "ema" in checkpoint else checkpoint
             result = self.load_state_dict(state_dict, strict=False)
-            # print(f"{result.missing_keys} missing keys")
-            # print(f"{result.unexpected_keys} unexpected keys")
             print(f"Loaded MVP appearance weights from {self.mvp_weights_path}")
 
     def _build_geometry_modules(self):
-        """Build the DA3 pose regressor and optionally load pretrained weights."""
         self.pose_regressor = DepthAnything3(model_name=self.da_model_name)
         if self.da_weights_path != "":
             state_dict = load_file(self.da_weights_path)
@@ -956,15 +837,6 @@ class TwoExpertModel(nn.Module):
         self.pose_regressor.prune_layers()
 
     def _build_transformer_stage(self, dim: int, nlayer: int) -> nn.ModuleList:
-        """Create a list of identical TransformerBlocks for one transformer stage.
-
-        Args:
-            dim: Hidden dimension for all blocks in this stage.
-            nlayer: Number of transformer blocks to create.
-
-        Returns:
-            An ``nn.ModuleList`` of ``nlayer`` TransformerBlock instances.
-        """
         return nn.ModuleList([
             TransformerBlock(dim, False, self.head_dim, self.inter_multi, self.qk_norm)
             for _ in range(nlayer)
@@ -974,16 +846,7 @@ class TwoExpertModel(nn.Module):
     def _create_patch_tokenizer(
         in_channels: int, patch_size: int, d_model: int,
     ) -> nn.Sequential:
-        """Build a patch-embedding tokenizer: rearrange → linear projection → LayerNorm.
-
-        Args:
-            in_channels: Number of input image channels (e.g. 12 for ray-map images).
-            patch_size: Side length of each square patch in pixels.
-            d_model: Output embedding dimension.
-
-        Returns:
-            An ``nn.Sequential`` that maps ``(B, V, C, H, W)`` to ``(B, V*L, d_model)``.
-        """
+        """Patch embedding: (B, V, C, H, W) -> (B, V*L, d_model)."""
         return nn.Sequential(
             Rearrange(
                 "b v c (hh ph) (ww pw) -> b (v hh ww) (ph pw c)",
@@ -993,15 +856,11 @@ class TwoExpertModel(nn.Module):
             nn.LayerNorm(d_model, bias=False),
         )
 
-    # --- Training mode override ---
-
     def train(self, mode: bool = True):
-        """Override train() to keep loss modules permanently in eval mode."""
+        """Keeps the loss modules permanently in eval mode."""
         super().train(mode)
         if not self.inference_mode:
             self.loss_computer.eval()
-
-    # --- Forward helpers ---
 
     def _build_raymap_input(
         self,
@@ -1045,16 +904,6 @@ class TwoExpertModel(nn.Module):
         }
         loss_metrics = self.loss_computer(renderings, target_images, cam_info)
 
-        # with torch.autocast(device_type="cuda", enabled=False):
-        #     rand_dirs = F.normalize(torch.randn_like(gaussians.xyz), p=2, dim=-1)
-        #     opacity_random = _spherical_harmonics(
-        #         self.opacity_degree, rand_dirs, gaussians.opacity,
-        #     )
-        #     opacity_random = opacity_random.sigmoid().mean()
-
-        # loss_metrics["opacity_loss"] = opacity_random * 0.001
-        # loss_metrics["loss"] = loss_metrics["loss"] + loss_metrics["opacity_loss"]
-
         return renderings, loss_metrics
 
     def _render_target_views(
@@ -1085,7 +934,7 @@ class TwoExpertModel(nn.Module):
                     self.sh_degree, self.near_plane, self.far_plane,
                 )
                 renderings.append(rendering)
-        renderings = torch.cat(renderings, dim=0)[None, ...]   # (1, T, H, W, 3)
+        renderings = torch.cat(renderings, dim=0)[None, ...]
         return renderings.permute(0, 1, 4, 2, 3).contiguous()  # (1, T, 3, H, W)
 
     def _training_forward(
@@ -1095,11 +944,7 @@ class TwoExpertModel(nn.Module):
         target_data_dict: dict,
         input_data_dict: dict,
     ) -> edict:
-        """Render Gaussians and compute all training losses.
-
-        Returns:
-            An edict with keys ``input``, ``target``, ``loss_metrics``, and ``render``.
-        """
+        """Render and compute training losses; returns edict(input, target, loss_metrics, render)."""
         renderings, loss_metrics = self._render_and_compute_loss(
             gaussians, cameras, target_data_dict["image"],
         )
@@ -1117,11 +962,7 @@ class TwoExpertModel(nn.Module):
         target_data_dict: dict,
         input_data_dict: dict,
     ) -> edict:
-        """Render target views at inference time, optionally with pose optimization.
-
-        Returns:
-            An edict with keys ``input``, ``target``, and ``render``.
-        """
+        """Render target views (after EPA if enabled); returns edict(input, target, render, gaussians, cameras)."""
         h, w = target_data_dict["image"].shape[-2:]
 
         if self.use_pose_optimization:
@@ -1140,8 +981,7 @@ class TwoExpertModel(nn.Module):
                 gaussians, cameras.pred_t_c2w, cameras.pred_t_fxfycxcy, w, h,
             )
 
-        # gaussians and cameras ride along so callers can export the scene - the
-        # Gaussians live in the normalized camera frame the bundle describes.
+        # gaussians/cameras ride along for scene export; Gaussians live in the normalized camera frame.
         return edict(
             input=input_data_dict,
             target=target_data_dict,
@@ -1150,19 +990,8 @@ class TwoExpertModel(nn.Module):
             cameras=cameras,
         )
 
-    # --- Main forward ---
-
     def forward(self, input_data_dict: dict, target_data_dict: dict) -> edict:
-        """Full forward pass: predict cameras → build ray maps → predict Gaussians → render.
-
-        Args:
-            input_data_dict: Batch dict for context views, must contain ``image`` and
-                camera ground-truth tensors.
-            target_data_dict: Batch dict for novel views to render.
-
-        Returns:
-            An edict whose contents depend on the mode (training vs. inference).
-        """
+        """Predict cameras -> build ray maps -> predict Gaussians -> render (mode-dependent edict)."""
         cameras = self.geometry_expert.predict_cameras(input_data_dict, target_data_dict)
         raymap_images, Ks, i_w2c = self._build_raymap_input(
             input_data_dict, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
@@ -1176,8 +1005,6 @@ class TwoExpertModel(nn.Module):
             return self._training_forward(gaussians, cameras, target_data_dict, input_data_dict)
         return self._inference_forward(gaussians, cameras, target_data_dict, input_data_dict)
 
-    # --- Pose optimization (optional inference refinement) ---
-
     def pose_optimization(
         self,
         gaussians: GaussianField,
@@ -1187,23 +1014,9 @@ class TwoExpertModel(nn.Module):
         h: int,
         target_images: torch.Tensor,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        """Refine target poses with ``epa_steps`` steps of Adam (EPA — evaluation-time pose alignment).
-
-        Quaternion and translation parameters are jointly optimised against an MSE
-        photometric loss while all Gaussian parameters remain frozen.
-
-        Args:
-            gaussians: Frozen Gaussian field from the appearance expert.
-            t_c2w: Initial target camera-to-world matrices (1, T, 4, 4).
-            t_fxfycxcy: Target camera intrinsics (1, T, 4).
-            w: Image width in pixels.
-            h: Image height in pixels.
-            target_images: Ground-truth target images (1, T, 3, H, W).
-
-        Returns:
-            A tuple of (renderings, (refined_c2w, refined_fxfycxcy)) where
-            renderings has shape (1, T, 3, H, W).
-        """
+        """EPA (evaluation-time pose alignment): ``epa_steps`` Adam steps on the target
+        quaternions + translations against an MSE loss, Gaussians frozen. Takes t_c2w (1, T, 4, 4),
+        t_fxfycxcy (1, T, 4), target_images (1, T, 3, H, W); returns (renderings (1, T, 3, H, W), (c2w, fxfycxcy))."""
         num_target_views = t_c2w.shape[1]
         quats = mat_to_quat(t_c2w[..., :3, :3]).clone().detach().requires_grad_(True)
         trans = t_c2w[..., :3, 3].clone().detach().requires_grad_(True)
@@ -1246,33 +1059,15 @@ class TwoExpertModel(nn.Module):
         refined_fxfycxcy = t_fxfycxcy.detach()
         return renderings.permute(0, 1, 4, 2, 3).contiguous(), (refined_c2w, refined_fxfycxcy)
 
-    # --- Checkpoint loading ---
-
     def _expand_gaussian_head(self, state_dict: dict) -> dict:
-        """Convert a pretrained gaussian_decoder head to this model's layout.
-
-        Three changes are applied, in order:
-
-        1. Spatial pooling. A checkpoint with more Gaussians per patch than this
-           model is mean-pooled over each sub-block of its patch grid. This
-           matches the ray change in ``_decode_gaussians``: a Gaussian here is
-           centered on the same sub-block its pooled predecessors covered.
-        2. ``xyz`` -> ``depth`` + ``image_offset``. The depth row is the mean of the
-           three xyz rows, which reproduces the pixel-aligned ``xyz.mean(-1)``
-           logit, and the offset rows are zeroed for pixel-aligned checkpoints
-           so that ``tanh(0) == 0`` starts every Gaussian at its cell center.
-        3. SH0 -> SH1. Preserve the DC color rows and zero the nine new rows.
-
-        With one Gaussian per pretrained pixel (2. alone) the converted model
-        predicts the same Gaussians as the pretrained one. A checkpoint already
-        in this layout is returned untouched.
-        """
+        """Convert a pretrained ``gaussian_decoder`` head to this model's layout: mean-pool a
+        denser patch grid to this sub-grid, replace the xyz rows by depth (mean of xyz) + zero
+        image_offset rows, and zero-pad SH0 to SH1. Converted checkpoints pass through."""
         key = "gaussian_decoder.1.weight"
         w = state_dict.get(key, None)
         if w is None:
             return state_dict
-        # Pixel xyz and depth + image_offset both use three rows. The marker
-        # distinguishes their semantics, including when the counts are equal.
+        # Pixel xyz and depth + image_offset both use three rows; the marker tells them apart.
         image_offset = "_image_offset_version" in state_dict
         if image_offset and w.shape == self.gaussian_decoder[1].weight.shape:
             return state_dict
@@ -1295,8 +1090,7 @@ class TwoExpertModel(nn.Module):
             )
         k = side_old // self.gaussian_side
 
-        # Rows are laid out as (ph, pw, d) over the pretrained patch grid; pool
-        # each k x k sub-block of that grid into one Gaussian. k == 1 is a no-op.
+        # Rows are (ph, pw, d) over the pretrained grid; pool each k x k sub-block (k == 1: no-op).
         w = rearrange(
             w, "(ah kh aw kw d) D -> ah aw (kh kw) d D",
             ah=self.gaussian_side, kh=k,
@@ -1321,8 +1115,7 @@ class TwoExpertModel(nn.Module):
             )
             color_w = rearrange(color_w, "ah aw c d D -> ah aw (c d) D")
         w = torch.cat([position_w, color_w, rest_w], dim=-2)
-        # Copy so the caller's dict is not mutated, but keep the _metadata that
-        # nn.Module.load_state_dict reads off the mapping.
+        # Copy, keeping the _metadata that nn.Module.load_state_dict reads.
         converted = OrderedDict(state_dict)
         converted._metadata = getattr(state_dict, "_metadata", OrderedDict())
         state_dict = converted
@@ -1341,19 +1134,8 @@ class TwoExpertModel(nn.Module):
 
     @torch.no_grad()
     def load_ckpt(self, load_path: str) -> int | None:
-        """Load EMA weights from a checkpoint file or the latest .pt in a directory.
-
-        The checkpoint is expected to be a dict with an ``"ema"`` key containing
-        the state dict. Loading is done with ``strict=False`` so DA3 weights (loaded
-        separately) do not cause missing-key errors.
-
-        Args:
-            load_path: Path to a ``.pt`` checkpoint file, or a directory containing
-                one or more ``.pt`` files (the lexicographically last is used).
-
-        Returns:
-            0 on success, None on failure.
-        """
+        """Load the ``"ema"`` state dict from a .pt file or the last .pt in a directory
+        (strict=False: DA3 weights are loaded separately). Returns 0, or None on failure."""
         if os.path.isdir(load_path):
             ckpt_names = sorted(f for f in os.listdir(load_path) if f.endswith(".pt"))
             ckpt_path = os.path.join(load_path, ckpt_names[-1])
@@ -1366,7 +1148,5 @@ class TwoExpertModel(nn.Module):
             print(f"Failed to load {ckpt_path}")
             return None
         result = self.load_state_dict(checkpoint["ema"], strict=False)
-        # print(f"{result.missing_keys} missing keys")
-        # print(f"{result.unexpected_keys} unexpected keys")
         print(f"Loaded 2Xplat checkpoint in {ckpt_path}")
         return 0

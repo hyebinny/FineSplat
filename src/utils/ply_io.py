@@ -1,13 +1,6 @@
-"""Per-scene Gaussian export, so a predicted scene can seed the original 3DGS optimizer.
-
-The .ply follows the reference gaussian-splatting layout exactly - x y z, zero normals,
-f_dc / channel-major f_rest, pre-sigmoid opacity, log-space scale, (w, x, y, z) rotation -
-which is what INRIA's ``GaussianModel.load_ply`` and every splat viewer parse.
-
-The Gaussians live in 2Xplat's *normalized* camera frame, not the dataset's raw one: the
-geometry expert rescales every pose to scene scale before the Gaussians are decoded.
-``cameras.json`` therefore stores the exact cameras the render used - anything optimizing
-on top of the .ply must pair the images with these cameras, or nothing projects.
+"""Per-scene Gaussian export in the reference gaussian-splatting .ply layout (x y z, zero
+normals, f_dc / channel-major f_rest, pre-sigmoid opacity, log scale, wxyz rotation).
+Gaussians are in 2Xplat's normalized camera frame; ``cameras.json`` stores those cameras.
 """
 
 import json
@@ -18,10 +11,7 @@ import torch
 
 from src.model.gaussians import GaussianField
 
-# The degree-0 SH basis value. 2Xplat treats opacity as an SH function, so its effective
-# logit is C0 * coeff; the reference 3DGS layout stores the logit directly. The export
-# bakes C0 in and the import divides it back out, so a round trip through our own
-# GaussianField is exact while the .ply means the same thing to INRIA's loader.
+# 2Xplat stores opacity as a degree-0 SH coefficient; the .ply stores the logit C0 * coeff.
 SH_C0 = 0.28209479177387814
 
 PROPS_FIXED = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
@@ -33,7 +23,7 @@ def write_ply(path, xyz, feature, scale, rotation, opacity) -> None:
     cols = [xyz, np.zeros_like(xyz), feature[:, 0, :]]
     names = list(PROPS_FIXED)
     if k > 1:
-        rest = feature[:, 1:, :].transpose(0, 2, 1).reshape(n, -1)   # channel-major
+        rest = feature[:, 1:, :].transpose(0, 2, 1).reshape(n, -1)
         cols.append(rest)
         names += [f"f_rest_{i}" for i in range(rest.shape[1])]
     cols += [opacity[:, None], scale, rotation]

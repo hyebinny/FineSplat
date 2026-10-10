@@ -1,16 +1,7 @@
-"""Fixed watchlist scenes evaluated on a schedule during FineSplat training.
+"""Fixed watchlist scenes evaluated on a schedule during training.
 
-Ten held-out test scenes and ten training scenes, evaluated at 6, 12 and 24 context
-views. The scenes and their context/target indices never change, so the W&B curves
-compare like with like across steps and across runs. Training also draws a 32-view
-bucket, but that condition is not logged: the reported benchmark stops at 24.
-
-Test scenes use the benchmark's own context/target indices, so their numbers sit on the
-same protocol as the reported 140-scene results. Train scenes are absent from that index,
-so indices are generated here with the same shape (N context / 8 target over the same
-frame window the benchmark uses for that view count) and then frozen to a json.
-
-Metrics are keyed ``watchlist/{split}_10s_{views}v_avg_{metric}``.
+Ten held-out test scenes and ten training scenes at 6, 12 and 24 context views, with
+frozen context/target indices. Metrics are keyed ``watchlist/{split}_10s_{views}v_avg_{metric}``.
 """
 
 import json
@@ -28,7 +19,6 @@ from src.utils.metric_utils import compute_lpips, compute_psnr, compute_ssim
 NUM_SCENES = 10
 NUM_TGT = 8
 # Context-view counts to log, with the frame window the benchmark json uses for each.
-# 32 views are trained on but not logged - the evaluation protocol stops at 24.
 VIEW_SPANS = {6: 50, 12: 100, 24: 150}
 
 
@@ -49,8 +39,7 @@ def _write_train_index(scene_paths: list[str], out_path: str, num_ctx: int, span
     for path in scene_paths:
         with open(path) as f:
             data = json.load(f)
-        # RE10K directories are '<split>_<id>' while its eval datasets look indices up by
-        # the bare id; DL3DV hashes carry no underscore, so the split is a no-op there.
+        # RE10K directories are '<split>_<id>' but the eval index is keyed by the bare id.
         key = data["scene_name"].split("_", 1)[-1]
         index[key] = _pick_indices(len(data["frames"]), num_ctx, span)
     with open(out_path, "w") as f:
@@ -68,20 +57,17 @@ def _subset_list(src_list: str, dst_list: str, n: int) -> list[str]:
 
 
 def build_watchlists(config, work_dir: str) -> dict:
-    """Return {(split, views): InferenceDataset} for every watchlist condition.
+    """Return {(split, views): dataset} for every watchlist condition.
 
-    ``config.watchlist.test_json_paths`` maps a context-view count - as a string, since
-    the config is wrapped in an edict, which rejects integer keys - to the benchmark json
-    that fixes the test scenes' indices at that count.
+    ``config.watchlist.test_json_paths`` maps a context-view count (string key) to the
+    benchmark json fixing the test scenes' indices at that count.
     """
     from copy import deepcopy
     import importlib
 
     os.makedirs(work_dir, exist_ok=True)
     json_paths = config.watchlist.test_json_paths
-    # watchlist.dataset_name picks the eval dataset class (RE10K stores scenes in a
-    # different per-scene format); watchlist.view_spans overrides the DL3DV ladder for
-    # benchmarks that define fewer conditions.
+    # watchlist.dataset_name picks the eval dataset class; watchlist.view_spans overrides VIEW_SPANS.
     ds_name = config.watchlist.get("dataset_name", "src.datasets.dataset.InferenceDataset")
     mod, cls = ds_name.rsplit(".", 1)
     ds_cls = importlib.import_module(mod).__dict__[cls]
@@ -89,9 +75,8 @@ def build_watchlists(config, work_dir: str) -> dict:
              config.watchlist.get("view_spans", {str(k): v for k, v in VIEW_SPANS.items()}).items()}
     datasets = {}
 
-    # With data.root the lists hold scene ids (data.scene_list / watchlist.test_scene_list)
-    # under <root>/<split>; otherwise they list camera json paths (data.data_path /
-    # watchlist.test_data_path). Either way the first NUM_SCENES entries are the watchlist.
+    # With data.root the lists hold scene ids (data.scene_list / watchlist.test_scene_list);
+    # otherwise camera json paths (data.data_path / watchlist.test_data_path). First NUM_SCENES are used.
     by_root = bool(config.data.get("root", None))
     list_key = "scene_list" if by_root else "data_path"
     test_src = config.watchlist.get("test_scene_list" if by_root else "test_data_path")
@@ -128,11 +113,7 @@ def build_watchlists(config, work_dir: str) -> dict:
 
 @torch.no_grad()
 def evaluate(core, datasets: dict, device, amp, out_dir: str, step: int, save_renders: bool) -> dict:
-    """Evaluate every watchlist condition and return flat metrics keyed for W&B.
-
-    Averages run over all target views of all scenes, not over per-scene means, so a scene
-    contributes in proportion to how many views it has.
-    """
+    """Evaluate every watchlist condition; metrics are averaged over all target views of all scenes."""
     core.eval()
     metrics = {}
     for (split, views), dataset in datasets.items():

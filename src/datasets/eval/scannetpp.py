@@ -1,13 +1,8 @@
 """ScanNet++ v2 iPhone evaluation over pixelSplat-style .torch chunks.
 
-The eval indices in src/data/scannetpp_ctx_*v_tgt_16v.json come from YoNoSplat and are
-defined over the iPhone captures of the 50 ScanNet++ v2 `sem_test` scenes, keyed
-'<scene>_iphone'. The matching pixels ship as one .torch chunk per scene, holding
-JPEG-encoded frames plus a (num_frames, 18) camera tensor: normalized fx/fy/cx/cy, the
-source width/height, and a flattened 3x4 OpenCV w2c.
-
-Preprocessing (resize/crop, pose normalization) is shared with the DL3DV inference path so
-the two eval sets stay comparable.
+One chunk per scene, holding JPEG-encoded frames plus a (num_frames, 18) camera tensor:
+normalized fx/fy/cx/cy, source width/height, and a flattened 3x4 OpenCV w2c. The eval
+index (src/data/scannetpp_ctx_*v_tgt_16v.json, from YoNoSplat) is keyed '<scene>_iphone'.
 """
 
 import glob
@@ -37,12 +32,7 @@ class ScanNetppEvalDataset(Dataset):
     """Dataset for inference over ScanNet++ v2 iPhone scenes stored as .torch chunks."""
 
     def __init__(self, config):
-        """
-        Args:
-            config: Config whose data.data_path points at the directory of per-scene
-                .torch chunks and data.json_path at the eval index naming the context and
-                target views for each scene.
-        """
+        """``data.data_path``: directory of per-scene .torch chunks; ``data.json_path``: eval index."""
         self.config = config
         self.chunk_paths = sorted(glob.glob(os.path.join(config.data.data_path, "*.torch")))
         if not self.chunk_paths:
@@ -51,7 +41,6 @@ class ScanNetppEvalDataset(Dataset):
             self.scene_dict = json.load(f)
 
     def __len__(self) -> int:
-        """Return the number of scenes in the dataset."""
         return len(self.chunk_paths)
 
     def process_frames(
@@ -59,16 +48,7 @@ class ScanNetppEvalDataset(Dataset):
         example: dict,
         frame_indices: list[int],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Decode the given frames of a chunk and return images, intrinsics, and poses.
-
-        Args:
-            example: The scene entry loaded from a .torch chunk.
-            frame_indices: Positions of the frames to decode.
-
-        Returns:
-            A tuple of (images, intrinsics, c2ws) where images is (N, C, H, W),
-            intrinsics is (N, 4), and c2ws is (N, 4, 4).
-        """
+        """Decode chunk frames. Returns images (N,C,H,W), intrinsics (N,4) fxfycxcy, c2ws (N,4,4)."""
         target_h = self.config.data.get("resize_h", -1)
         target_w = self.config.data.get("resize_w", -1)
         square_crop = self.config.data.square_crop
@@ -98,14 +78,7 @@ class ScanNetppEvalDataset(Dataset):
         return images, intrinsics, c2ws
 
     def __getitem__(self, idx: int) -> dict:
-        """Return a scene sample, falling back to a random scene on error.
-
-        Args:
-            idx: Index into chunk_paths.
-
-        Returns:
-            A dict with image, intrinsic, pose, index, and scene_name tensors.
-        """
+        """Return a scene sample, falling back to a random scene on error."""
         try:
             return self._load_scene(idx)
         except Exception:
@@ -114,19 +87,7 @@ class ScanNetppEvalDataset(Dataset):
             return self.__getitem__(random.randint(0, len(self) - 1))
 
     def _load_scene(self, idx: int) -> dict:
-        """Load and process the scene held by the chunk at the given index.
-
-        Args:
-            idx: Index into chunk_paths.
-
-        Returns:
-            A dict with concatenated input+target image, intrinsic, pose, and index
-            tensors, plus the scene_name string.
-
-        Raises:
-            KeyError: If the scene is not present in the eval index.
-            ValueError: If poses contain NaN or Inf after normalization.
-        """
+        """Load one scene; image/fxfycxcy/c2w/index hold input frames then target frames."""
         example = torch.load(self.chunk_paths[idx], weights_only=False)[0]
         scene_name = example["key"]
 
@@ -135,7 +96,6 @@ class ScanNetppEvalDataset(Dataset):
         scene_eval_info = self.scene_dict[scene_name]
 
         data_cfg = self.config.data
-        # Chunks hold one scene each, so every frame is a selection candidate.
         candidate_indices = list(range(len(example["images"])))
 
         target_frame_idx = sorted(_select_target_frames(

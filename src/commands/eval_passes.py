@@ -1,34 +1,15 @@
-"""Benchmark FineSplat, scored after every Stage-2 step.
-
-One forward already renders the target views after each Stage-2 step, so a single sweep
-over the benchmark yields step 1..N together - no need for N runs. Step 0 is the Stage-1
-prediction Stage 2 starts from, rendered here too so that every delta is measured against
-a number produced under the same preprocessing, poses and seed.
-
-Results follow 2Xplat's own evaluation layout - one directory per scene holding
-metrics.json, then summary.csv and average_metrics.txt beside them - with the step as
-one more level:
-
-    <out_dir>/step0/000001_<scene>/metrics.json
-    <out_dir>/step0/summary.csv
-    <out_dir>/step4/...
-
-so a Stage-1 directory and one step of a FineSplat run are the same shape and
-summarize_evaluation reads both.
-
-With ``inference.pose_optimization`` the target poses are DA3's, so every step is scored
-after EPA realigns them against that step's own Gaussians - the unposed protocol, applied
-per step rather than to the last one only. That costs one alignment per step, step 0
-included.
+"""Benchmark FineSplat, scored after every Stage-2 step (step 0 = Stage 1) in one forward per scene.
 
     python -m src.commands.eval_passes <eval_config> [out_dir] [inference.key=value ...]
 
-``inference.scene_range`` [lo, hi) runs one shard of the benchmark and leaves the
-summaries to a final pass; ``inference.vis_save`` and ``inference.ply_save`` write the
-target renders / the Gaussians of each evaluated step (see the comments below).
+    <out_dir>/step<i>/000001_<scene>/metrics.json, <out_dir>/step<i>/summary.csv
 
-The eval config supplies data/inference sections (json_path, num_input_frames, ckpt) and a
-``stage2`` block matching the checkpoint's training config.
+With ``inference.pose_optimization`` each step is scored after EPA realigns the targets to its Gaussians.
+inference.eval_steps: steps to evaluate, e.g. [0, 4] (default: all).
+inference.step_dir_fmt: per-step directory under out_dir (default "step{i}").
+inference.scene_range: [lo, hi) shard; summaries are left to a final pass.
+inference.vis_save: {root, subdir, tags: {step: tag}} writes target renders to <root>/<tag>/<subdir>/<scene>/<frame:03d>.png.
+inference.ply_save: {root, tags: {step: name}} writes each step's Gaussians to <root>/<tag>/<scene>/point_cloud.ply + cameras.json.
 """
 import json
 import os
@@ -59,25 +40,18 @@ def main():
     base = load_model(config, device)
     base.eval()
     model = load_finesplat(config, base, device)
-    # step 0 needs the Stage-1 Gaussians, and EPA needs every step's separately
     model.keep_step_gaussians = True
     num_steps = model.num_steps
     num_input = config.data.num_input_frames
     visualize_first_n = config.inference.get("visualize_first_n", 0)
     out_dir = out_arg or Path(resolve_out_dir(config))
-    # inference.eval_steps: evaluate only these steps (e.g. [0, 4]); EPA is the expensive
-    # part and runs once per evaluated step. Default: all of them.
     eval_steps = list(config.inference.get("eval_steps", None) or range(num_steps + 1))
-    # inference.step_dir_fmt: where each step's results go under out_dir
-    # ("step{i}" by default; e.g. "step{i}/6v" puts several runs under shared step dirs).
     step_dir_fmt = config.inference.get("step_dir_fmt", "step{i}")
     step_dirs = [out_dir / step_dir_fmt.format(i=i) for i in eval_steps]
     for d in step_dirs:
         os.makedirs(d, exist_ok=True)
     print(f"writing to {out_dir}", flush=True)
 
-    # inference.scene_range: [lo, hi) shard of the benchmark; summaries are then left to a
-    # final summarize pass once every shard is done.
     lo, hi = config.inference.get("scene_range", None) or (0, None)
     with torch.no_grad(), amp:
         for idx, batch in enumerate(dataloader):
@@ -92,7 +66,7 @@ def main():
 
             gaussians = [out["gaussians_base"]] + list(out["gaussians_all"])
             gaussians = [gaussians[i] for i in eval_steps]
-            aligned_cams = [None] * len(gaussians)  # EPA-aligned (target c2w, fxfycxcy) per evaluated step
+            aligned_cams = [None] * len(gaussians)  # EPA-aligned target (c2w, fxfycxcy) per step
             if base.use_pose_optimization:
                 renders = []
                 for k, g in enumerate(gaussians):
@@ -107,10 +81,7 @@ def main():
                 renders = [frozen] + list(out["renders"])
                 renders = [renders[i] for i in eval_steps]
 
-            # inference.vis_save: {root, subdir, tags: {step: tag}} writes the evaluated target
-            # renders as <root>/<tag>/<subdir>/<scene>/<frame:03d>.png, the frame being the
-            # target's index in the benchmark json, so figures come from exactly the renders
-            # the metrics were computed on.
+            # frame numbers are the targets' indices in the benchmark json
             vis = config.inference.get("vis_save", None)
             if vis:
                 frames = tgt["index"][0].reshape(-1).long().tolist()
@@ -123,10 +94,7 @@ def main():
                     for vi, fi in enumerate(frames):
                         torchvision.utils.save_image(r[0, vi].float().clamp(0, 1), vd / f"{fi:03d}.png")
 
-            # inference.ply_save: {root, tags: {step: name}}: each evaluated step's Gaussians as
-            # <root>/<tag>/<scene>/point_cloud.ply + cameras.json (layout: src/utils/ply_io.py);
-            # the tag defaults to step{i}. With EPA on, cameras.json also gets "target_epa": the target
-            # cameras after EPA aligned them against that step's Gaussians.
+            # with EPA on, cameras.json also gets "target_epa": the aligned target cameras
             ply = config.inference.get("ply_save", None)
             if ply:
                 for it, g, ref in zip(eval_steps, gaussians, aligned_cams):

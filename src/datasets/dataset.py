@@ -1,3 +1,6 @@
+"""Inference dataset over per-scene camera jsons (``scene_name`` + ``frames`` with image path,
+intrinsics and w2c), with context/target frames fixed by an eval index json.
+"""
 import os
 import torch
 import json
@@ -38,11 +41,7 @@ class FrameSelectionConfig:
 
 
 def _validate_frame_selection_config(cfg: FrameSelectionConfig) -> None:
-    """Assert that a FrameSelectionConfig is internally consistent.
-
-    Args:
-        cfg: The frame selection config to validate.
-    """
+    """Assert that a FrameSelectionConfig is internally consistent."""
     assert cfg.min_dist <= cfg.max_dist
     if cfg.num_target == 0:
         assert cfg.target_select_type in ['uniform_every', 'json_target']
@@ -58,10 +57,6 @@ class InferenceDataset(Dataset):
     """Dataset for inference over scenes listed in a text file."""
 
     def __init__(self, config):
-        """
-        Args:
-            config: OmegaConf config containing data settings for inference.
-        """
         self.config = config
         self.scene_json_paths = resolve_scene_paths(config.data)
         self.scene_dict = self._load_scene_eval_index(config.data.get("json_path", None))
@@ -69,14 +64,7 @@ class InferenceDataset(Dataset):
 
     @staticmethod
     def _load_scene_eval_index(json_path: str) -> dict:
-        """Load the eval metadata file and index it by scene name for O(1) lookup.
-
-        Args:
-            json_path: Path to a JSON file containing eval metadata as a list or dict.
-
-        Returns:
-            A dict mapping scene_name strings to their metadata entries.
-        """
+        """Load the eval index (list or dict) keyed by scene_name."""
         with open(json_path, "r") as f:
             eval_data = json.load(f)
         if isinstance(eval_data, list):
@@ -86,7 +74,6 @@ class InferenceDataset(Dataset):
         raise ValueError(f"Unsupported eval index format: {type(eval_data)}")
 
     def __len__(self) -> int:
-        """Return the number of scenes in the dataset."""
         return len(self.scene_json_paths)
 
     def process_frames(
@@ -94,17 +81,7 @@ class InferenceDataset(Dataset):
         frames: list[dict],
         image_base_dir: str,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Load images and camera data for a list of frames, applying configured resize/crop.
-
-        Args:
-            frames: List of frame dicts from the scene JSON, each containing image path
-                and camera parameters.
-            image_base_dir: Directory used to resolve relative image paths.
-
-        Returns:
-            A tuple of (images, intrinsics, c2ws) where images is (N, C, H, W),
-            intrinsics is (N, 4), and c2ws is (N, 4, 4).
-        """
+        """Load and resize/crop frames. Returns images (N,C,H,W), intrinsics (N,4) fxfycxcy, c2ws (N,4,4)."""
         target_h = self.config.data.get("resize_h", -1)
         target_w = self.config.data.get("resize_w", -1)
         square_crop = self.config.data.square_crop
@@ -124,14 +101,7 @@ class InferenceDataset(Dataset):
         return images, intrinsics, c2ws
 
     def _read_frame_selection_config(self, num_frames_total: int) -> FrameSelectionConfig:
-        """Extract frame selection parameters from config, clamping distances to available frames.
-
-        Args:
-            num_frames_total: Total number of frames in the current scene.
-
-        Returns:
-            A FrameSelectionConfig populated from the data config.
-        """
+        """Frame selection parameters from config, distances clamped to the scene length."""
         data_cfg = self.config.data
         min_dist = data_cfg.get("min_frame_dist", "all")
         max_dist = data_cfg.get("max_frame_dist", 256)
@@ -153,14 +123,7 @@ class InferenceDataset(Dataset):
         )
 
     def __getitem__(self, idx: int) -> dict:
-        """Return a scene sample, falling back to a random scene on error.
-
-        Args:
-            idx: Index into scene_json_paths.
-
-        Returns:
-            A dict with image, intrinsic, pose, index, and scene_name tensors.
-        """
+        """Return a scene sample, falling back to a random scene on error."""
         try:
             return self._load_scene(idx)
         except Exception:
@@ -169,19 +132,7 @@ class InferenceDataset(Dataset):
             return self.__getitem__(random.randint(0, len(self) - 1))
 
     def _load_scene(self, idx: int) -> dict:
-        """Load and process a single scene at the given index.
-
-        Args:
-            idx: Index into scene_json_paths.
-
-        Returns:
-            A dict with concatenated input+target image, intrinsic, pose, and index
-            tensors, plus the scene_name string.
-
-        Raises:
-            KeyError: If the scene is not present in the eval index.
-            ValueError: If poses contain NaN or Inf after normalization.
-        """
+        """Load one scene; image/fxfycxcy/c2w/index hold input frames then target frames."""
         scene_path = self.scene_json_paths[idx]
         with open(scene_path, 'r') as f:
             data_json = json.load(f)

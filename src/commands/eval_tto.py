@@ -1,22 +1,9 @@
-"""Benchmark test-time optimization (TTO) on a checkpoint's Stage-1 tokens.
-
-The checkpoint is loaded as in eval_passes (end-to-end checkpoints carry the fine-tuned
-Stage 1), but Stage 2's output is not used: TTO starts from Stage 1's own fused tokens
-(``tokens_base``, step 0) and optimizes them against the context views
-(src.model.tto.optimize_tokens). Every lr in ``inference.tto.lrs`` restarts from the
-same tokens, so one model load covers a whole sweep. Targets are then rendered at the
-config's cameras, or after EPA with ``inference.pose_optimization``.
-
-    <out_dir>/step0_tto<lr>[_s<k>]/000001_<scene>/{metrics.json, tto.json}, summary.csv
-
-``inference.tto.steps`` [1, 5, 50, ...] scores the tokens after each step count from a
-single max(steps)-step run; tto.json then holds the time to reach that step.
-
-``inference.tto`` other keys override src.model.tto.default_conf (num_steps,
-photometric, perceptual_weight, ...). ``inference.scene_range`` [lo, hi) runs a shard
-and leaves the summaries to a final pass.
-
+"""Benchmark test-time optimization (TTO) of Stage 1's tokens against the context views (src.model.tto).
     python -m src.commands.eval_tto <eval_config> [out_dir] [inference.key=value ...]
+    <out_dir>/step0_tto<lr>[_s<k>]/000001_<scene>/{metrics.json, tto.json}, summary.csv
+inference.tto.lrs: learning rates to sweep (each restarts from the same tokens); inference.tto.steps: also score
+    after each of these step counts, from one run of max(steps); other inference.tto.* keys override src.model.tto.default_conf.
+inference.scene_range: [lo, hi) shard; summaries are left to a final pass.
 """
 import json
 import os
@@ -50,8 +37,6 @@ def main():
 
     tto = OmegaConf.to_container(config.inference.tto)
     lrs = [float(x) for x in tto.pop("lrs")]
-    # tto.steps: also score the tokens after each of these step counts, from one run of
-    # max(steps) (constant lr, so identical to separate shorter runs).
     steps = [int(k) for k in tto.pop("steps", [])] or [None]
     num_input = config.data.num_input_frames
     out_dir = out_arg or Path(resolve_out_dir(config))
