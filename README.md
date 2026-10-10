@@ -16,19 +16,6 @@ Yonsei University
   <img src="./assets/teaser.png" alt="FineSplat" />
 </div>
 
-FineSplat is a feed-forward 3D Gaussian Splatting model for many-view, pose-free input. It predicts
-Gaussians on fine 4x4 patches with **Stage 1** (2Xplat: DA3 + MVP, attending within small groups of
-neighbouring views) and then corrects them with **Stage 2**, a 4-step module that renders the current
-Gaussians back into the context views, lifts the rendering error onto the tokens, and regroups the
-tokens by 3D proximity with serialized attention, so that tokens from different view groups that
-describe the same surface correct each other. With a quarter of the Gaussians of pixel-aligned
-methods it reaches the highest PSNR on DL3DV, RE10K and ScanNet++, and it can be pruned to ZipSplat's
-budget with almost no loss.
-
-<div align="center">
-  <img src="./assets/main_figure.jpg" alt="FineSplat overview" />
-</div>
-
 ## Installation
 
 ```bash
