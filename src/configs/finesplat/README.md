@@ -8,10 +8,10 @@ checkpoints go under `pretrained_weights/` and outputs next to the repo in `../F
 
 ```
 pretrained_weights/
-  da3_giant.safetensors                              DA3-Giant (pose / intrinsics)
-  mvp_patchwise_offset_dl3dv_lr_novdo.pt             MVP appearance expert
-  2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt   Stage 1 (2Xplat, patch-aligned)
-  finesplat/e2e_224_step10k_ema.pt                   FineSplat-224: Stage 1 + Stage 2, end-to-end, EMA
+  finesplat_224res.pt                                FineSplat-224 (Stage 1 + Stage 2, end-to-end; the only file evaluation needs)
+  da3_giant.safetensors                              DA3-Giant                  } Stage-1 experts, needed for
+  mvp_patchwise_offset_dl3dv_lr_novdo.pt             MVP appearance expert      } training only; from the DA3
+  2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt   Stage 1 (2Xplat)           } and 2Xplat releases
 ```
 
 ## Data

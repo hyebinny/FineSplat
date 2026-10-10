@@ -37,20 +37,19 @@ pip install git+https://github.com/QitaoZhao/gsplat.git --no-build-isolation
 
 ## Checkpoints
 
-Checkpoints are on [🤗 Hugging Face](https://huggingface.co/hyebinny/FineSplat). Organize them as follows:
+We release one checkpoint, FineSplat-224, which holds the whole model (Stage 1 and Stage 2,
+fine-tuned end-to-end). Download it from [🤗 Hugging Face](https://huggingface.co/hyebinny/FineSplat)
+and place it at:
 
 ```
-path/to/FineSplat/pretrained_weights/
-├── da3_giant.safetensors                              # geometry expert (DA3-G)
-├── mvp_patchwise_offset_dl3dv_lr_novdo.pt             # appearance expert (MVP, 4x4 patches)
-├── 2Xplat/
-│   └── 2xplat_patchwise_offset_dl3dv_lr_novdo.pt      # Stage 1 (2Xplat, patch-aligned)
-└── finesplat/
-    └── e2e_224_step10k_ema.pt                         # FineSplat-224 (Stage 1 + Stage 2, end-to-end)
+path/to/FineSplat/pretrained_weights/finesplat_224res.pt
 ```
 
-The Stage-1 files are needed even when evaluating the FineSplat checkpoint: the model is built from
-them first, then the end-to-end weights (which contain both stages) are loaded on top.
+Nothing else is needed for evaluation: the DA3, MVP and 2Xplat weights are part of this file, so the
+evaluation configs leave `model.da_model_weights_path`, `model.mvp_weights_path` and
+`inference.ckpt_path` empty.
+
+Training Stage 2 from scratch starts from the Stage-1 experts instead; see [Training](#training).
 
 ## Datasets
 
@@ -122,6 +121,13 @@ Useful `inference.*` options (in the yaml, or appended to the command as `infere
 Stage 2 is first trained on a frozen Stage 1 with GT cameras, then the whole model is fine-tuned
 end-to-end in the pose-free setting. Both read `data.root` / `data.scene_list` as above and log a
 fixed watchlist of scenes to W&B (`train.wandb`, API key in `src/configs/api_keys.yaml`).
+
+Training needs the Stage-1 experts, which we do not redistribute: the geometry expert
+[DA3-Giant](https://huggingface.co/depth-anything/DA3-GIANT-1.1/resolve/main/model.safetensors)
+and the patch-aligned appearance expert / 2Xplat checkpoint from
+[2Xplat](https://github.com/HwasikJeong/2Xplat). The training configs expect them at
+`pretrained_weights/da3_giant.safetensors`, `pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt`
+and `pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt`.
 
 ```bash
 # Stage 2 on the frozen Stage 1: 20k iterations, 4 GPUs
