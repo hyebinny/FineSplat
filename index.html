@@ -7,9 +7,9 @@
 <style>
   /* dark look matching the demo video: black ground, light gray text, burnt-orange and blue accents,
      DejaVu Sans (the demo's typeface), shipped in assets/fonts */
-  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
-  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Bold.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
-  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Oblique.ttf") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
+  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans.ttf?v=3e926c44") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Bold.ttf?v=359d5be7") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
+  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Oblique.ttf?v=fa6c30f2") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
   :root {
     color-scheme: dark;
     --bg: #000000; --fg: #e4e4e7; --muted: #9b9ba3; --line: #2a2c31;
@@ -176,7 +176,7 @@
   #cmpAll .stages > div { flex-basis: calc((100% - 36px) / 4); }  /* GT + 3 baselines */
   .gain { color: var(--blue); font-weight: 700; }
   .err-stage { margin-top: 6px; }
-  /* Stage 1 / Stage 2 Gaussian positions, interactive (gsview/pcd.html, data: scripts/make_pcdview.py) */
+  /* Stage 1 / Stage 2 Gaussian positions, interactive (gsview/pcd.html?v=b235e66d, data: scripts/make_pcdview.py) */
   .pcd-frame { display: block; width: 100%; aspect-ratio: 16 / 10; margin-top: 24px; border: 1px solid var(--line);
                border-radius: 8px; background: #000; }
   @media (max-width: 700px) { .pcd-frame { aspect-ratio: 3 / 4; } }
@@ -192,7 +192,7 @@
 <main>
   <header class="hero">
     <div class="title-card">
-      <h1><img class="logo" src="assets/logo.png" alt="FineSplat"></h1>
+      <h1><img class="logo" src="assets/logo.png?v=03338982" alt="FineSplat"></h1>
       <p class="subtitle">Fine Patches, Local Groups, Detailed Splats</p>
     </div>
     <p class="authors">
@@ -204,13 +204,13 @@
     <!-- TODO: fill in links at release -->
     <div class="links">
       <a class="btn" href="#" aria-disabled="true">Paper (arXiv)</a>
-      <a class="btn" href="#" aria-disabled="true">Code</a>
+      <a class="btn" href="https://github.com/hyebinny/FineSplat" target="_blank" rel="noopener">Code</a>
     </div>
   </header>
 
   <div class="detail">
     <figure class="plot" id="plot">
-      <img src="assets/gs_vs_psnr.png" alt="PSNR versus number of Gaussians on DL3DV with 24 input views: FineSplat reaches higher PSNR with fewer Gaussians than pixel-aligned methods">
+      <img src="assets/gs_vs_psnr.png?v=5ebb9ed0" alt="PSNR versus number of Gaussians on DL3DV with 24 input views: FineSplat reaches higher PSNR with fewer Gaussians than pixel-aligned methods">
     </figure>
     <section class="teaser">
       <video id="teaser1" src="media/teaser_cd9c981e_row1.mp4" autoplay muted loop playsinline></video>
@@ -225,7 +225,7 @@
 
   <h2>Overview</h2>
   <div class="demo">
-    <video src="media/method.mp4" poster="media/method_poster.jpg" controls playsinline preload="metadata"
+    <video src="media/method.mp4?v=705b1e0a" poster="media/method_poster.jpg?v=6f1d0ff2" controls playsinline preload="metadata"
       aria-label="FineSplat method video"></video>
   </div>
 
@@ -256,7 +256,7 @@
   expressive Gaussian tokens.</p>
   <div class="stages" id="stages"></div>
   <div class="err-legend"><span>Error</span><span>0</span><i></i><span>&ge; 0.3</span></div>
-  <iframe class="pcd-frame" src="gsview/pcd.html" title="Gaussian Position Visualization" loading="lazy"></iframe>
+  <iframe class="pcd-frame" src="gsview/pcd.html?v=b235e66d" title="Gaussian Position Visualization" loading="lazy"></iframe>
   <div class="inputs pcd-inputs" id="pcdInputs"></div>
   <p class="pcd-cap">Input views of the scene in the viewer.</p>
 
