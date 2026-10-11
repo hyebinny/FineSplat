@@ -1,5 +1,5 @@
 """Evaluate FineSplat (Stage 1 + Stage 2) with the same protocol and outputs as ``src.commands.inference``.
-    python -m src.commands.inference_finesplat --config src/configs/finesplat/eval/dl3dv_6v_posed.yaml
+    python -m src.commands.inference_finesplat --config src/configs/DL3DV/eval/6v/posed.yaml
 inference.checkpoint: {ckpt_path, use_ema, full_state}; an empty ckpt_path leaves the Stage-2
     head zero-initialised, i.e. the Stage-1-only control through the same decode path.
 """

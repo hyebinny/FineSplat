@@ -1,7 +1,7 @@
 """Train FineSplat: Stage 2 on a frozen Stage 1 (default), or end-to-end with ``stage2.e2e: true``.
 
-    torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/finesplat/train/stage2_224.yaml
-    torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/finesplat/train/e2e_224.yaml
+    torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2.yaml
+    torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/DL3DV/train/e2e.yaml
 
 Writes <out_dir>/finesplat_last.pt, finesplat_best.pt, finesplat_step_<n>.pt and watchlist/.
 Config keys: stage2.arch, stage2.e2e; train.lr, train.stage2_lr, train.num_steps,

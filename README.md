@@ -78,14 +78,13 @@ for RE10K; the directory of `.torch` chunks for ScanNet++). Their context / targ
 
 ## Evaluation
 
-`src/configs/finesplat/eval/` has one config per dataset / view count / camera setting:
-`dl3dv_{6,12,24}v_{posed,predgt,unposed}`, `re10k_6v_{posed,unposed}`,
-`scannetpp_{32,64,128}v_unposed`.
+`src/configs/<dataset>/eval/<N>v/` has one config per camera setting:
+`DL3DV/eval/{6v,12v,24v}/{posed,unposed}.yaml`, `RE10K/eval/6v/{posed,unposed}.yaml`,
+`ScanNetpp/eval/{32v,64v,128v}/unposed.yaml`.
 
 | Setting | Context cameras | Target cameras |
 | ------- | --------------- | -------------- |
 | `posed` | GT poses and intrinsics | GT |
-| `predgt` | DA3 poses, GT intrinsics | DA3, then EPA |
 | `unposed` | DA3 poses and intrinsics | DA3, then EPA |
 
 EPA (evaluation-time pose alignment) optimizes the target poses for 200 Adam steps against the
@@ -93,10 +92,10 @@ rendering before scoring, as in 2Xplat and YoNoSplat.
 
 ```bash
 # step 0 (Stage 1) and step 4 (FineSplat), all Gaussians
-CUDA_VISIBLE_DEVICES=0 python -m src.commands.eval_passes src/configs/finesplat/eval/dl3dv_6v_posed.yaml
+CUDA_VISIBLE_DEVICES=0 python -m src.commands.eval_passes src/configs/DL3DV/eval/6v/posed.yaml
 
 # step 4 pruned to ZipSplat's budget (10,368 Gaussians per view) by contribution score
-CUDA_VISIBLE_DEVICES=0 python -m src.commands.eval_prune  src/configs/finesplat/eval/dl3dv_6v_posed.yaml
+CUDA_VISIBLE_DEVICES=0 python -m src.commands.eval_prune  src/configs/DL3DV/eval/6v/posed.yaml
 ```
 
 Results are written next to the repository, under
@@ -132,28 +131,25 @@ and `pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt`.
 ```bash
 # Stage 2 on the frozen Stage 1: 20k iterations, 4 GPUs
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node 4 -m src.commands.train_finesplat \
-  --config src/configs/finesplat/train/stage2_224.yaml
+  --config src/configs/DL3DV/train/stage2.yaml
 
 # end-to-end fine-tuning: 10k iterations, 8 GPUs, initialised from the run above
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node 8 -m src.commands.train_finesplat \
-  --config src/configs/finesplat/train/e2e_224.yaml
+  --config src/configs/DL3DV/train/e2e.yaml
 ```
 
 Checkpoints go to `../FineSplat_exp_final/train/<run>/` (Stage 2) and `../FineSplat_e2e_ckpt/<run>/`
 (end-to-end) as `finesplat_last.pt`, `finesplat_best.pt` and `finesplat_step_<N>.pt`. Stage 1 itself is
-trained with 2Xplat's own recipe (`src/commands/train.py`, `src/configs/train_update_dynamic.yaml`).
+trained with [2Xplat](https://github.com/HwasikJeong/2Xplat)'s own recipe.
 
-## Acknowledgement
+## Related Projects
 
-Our project is based on the following awesome repositories:
+This project builds on many excellent research works. We thank the authors for sharing their code.
+
 - [2Xplat](https://github.com/HwasikJeong/2Xplat)
-- [ZipSplat](https://github.com/cvg/zipsplat)
 - [MVP](https://github.com/Gynjn/MVP)
-- [Depth Anything 3](https://github.com/ByteDance-Seed/depth-anything-3)
-- [YoNoSplat](https://github.com/cvg/yonosplat)
 - [Point Transformer V3](https://github.com/Pointcept/PointTransformerV3)
-
-Thanks for releasing code!!!
+- [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)
 
 ## Citation
 
