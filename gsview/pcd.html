@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gaussian Position Visualization</title>
+<style>
+  /* Stage 1 / Stage 2 Gaussian centers as points (data: scripts/make_pcdview.py) */
+  @font-face { font-family: "DejaVu Sans"; src: url("../assets/fonts/DejaVuSans.ttf") format("truetype"); font-weight: 400; }
+  @font-face { font-family: "DejaVu Sans"; src: url("../assets/fonts/DejaVuSans-Bold.ttf") format("truetype"); font-weight: 700; }
+  :root { color-scheme: dark; --bg: #000; --fg: #e4e4e7; --muted: #9b9ba3; --line: #2a2c31; --chip: #15161a;
+          --accent: #ee6a33; --blue: #3f7cf0; --panel: rgba(12, 14, 18, 0.85); }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.5 "DejaVu Sans", Verdana, sans-serif; overflow: hidden; }
+  #view { position: fixed; inset: 0; overflow: hidden; }
+  .panel { position: fixed; left: 12px; top: 12px; width: min(265px, calc(100vw - 24px)); padding: 12px 14px;
+           max-height: calc(100vh - 24px); overflow-y: auto;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 10px; }
+  .panel h1 { font-size: 16px; margin: 0; }
+  .panel .sub { color: var(--muted); font-size: 12px; margin: -6px 0 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  label { display: grid; gap: 2px; font-size: 13px; }
+  label span { display: flex; justify-content: space-between; color: var(--muted); }
+  label .ends b { color: #fff; }
+  label b { color: var(--fg); font-weight: 400; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  button { font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
+           background: var(--chip); color: var(--fg); cursor: pointer; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #0b0b0c; }
+  #sceneBtns button { border-color: var(--blue); color: var(--blue); }
+  #sceneBtns button.on { background: var(--blue); color: #fff; }
+  #reset { position: absolute; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+           padding: 6px 18px; font-size: 14px; background: var(--panel); }
+  #view canvas { display: block; }
+  #gs { position: absolute; inset: 0; }
+  [hidden] { display: none !important; }
+  #reset { z-index: 2; }
+  #msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
+</style>
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                 "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js" } }
+</script>
+</head>
+<body>
+<div id="view"><div id="gs" hidden></div><div id="msg">Loading point cloud&hellip;</div><button id="reset">Reset view</button></div>
+<div class="panel">
+  <h1>Gaussian Position Visualization</h1>
+  <p class="sub">Positions and colors of the Gaussians output by Stage 1 and Stage 2.</p>
+  <div class="row" id="sceneBtns"></div>
+  <div class="row" hidden><!-- Gaussians mode switched off; drop "hidden" to bring it back --><button data-m="pts" class="on">Points</button><button data-m="gs">Gaussians</button></div>
+  <div>
+    <label id="tRow"><span class="ends"><b>Stage 1</b><b>Stage 2</b></span><input id="t" type="range" min="0" max="1" step="0.01" value="1"></label>
+    <div class="row" style="margin-top:6px"><button id="s1">Stage 1</button><button id="s2" class="on">Stage 2</button><button id="play">Loop</button></div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const $ = id => document.getElementById(id);
+
+// t blends Stage 1 -> 2 (position, color, opacity): Gaussian i is the same patch and slot in both stages
+// crop: points outside the box (boxR rows = box axes, local = boxR (p - boxO)) are hidden
+const box = { R: new THREE.Matrix3(), O: new THREE.Vector3(), lo: new THREE.Vector3(), hi: new THREE.Vector3() };
+// fixed: points with opacity < 0.015 are hidden; point size 1.5 px at an 800 px tall view
+const uniforms = () => ({ t: { value: 1 }, minOp: { value: 0.015 }, size: { value: 1.5 }, scale: { value: 1 },
+                          boxR: { value: box.R }, boxO: { value: box.O }, boxLo: { value: box.lo }, boxHi: { value: box.hi } });
+const vertexShader = `
+  attribute vec3 pos2; attribute vec3 rgb1; attribute vec3 rgb2; attribute float op1; attribute float op2;
+  uniform float t; uniform float minOp; uniform float size; uniform float scale;
+  uniform mat3 boxR; uniform vec3 boxO; uniform vec3 boxLo; uniform vec3 boxHi;
+  varying vec3 vCol;
+  void main() {
+    float op = mix(op1, op2, t);
+    vec3 p = mix(position, pos2, t), l = boxR * (p - boxO);
+    bool out_ = any(lessThan(l, boxLo)) || any(greaterThan(l, boxHi));
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_Position = op < minOp || out_ ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;  // culled: outside the clip box
+    gl_PointSize = size * scale;
+    vCol = mix(rgb1, rgb2, t);
+  }`;
+const fragmentShader = `
+  varying vec3 vCol;
+  void main() { if (length(gl_PointCoord - 0.5) > 0.5) discard; gl_FragColor = vec4(vCol, 1.0); }`;
+const mat = new THREE.ShaderMaterial({ uniforms: uniforms(), vertexShader, fragmentShader });
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 2000);
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+$("view").appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+const fit = () => {
+  const w = $("view").clientWidth, h = $("view").clientHeight;
+  renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+  mat.uniforms.scale.value = renderer.getPixelRatio() * h / 800;
+};
+new ResizeObserver(fit).observe($("view")); fit();
+
+let meta = null, pts = null, loadId = 0;
+// box from pcd.json
+const setBox = () => {
+  if (!meta) return;
+  const b = meta.box, a = b.axes;
+  box.R.set(...a[0], ...a[1], ...a[2]); box.O.set(...b.origin);
+  box.lo.set(...b.lo); box.hi.set(...b.hi);
+};
+const home = () => {
+  if (!meta) return;
+  const c = meta.camera, pos = new THREE.Vector3(...c.pos), fwd = new THREE.Vector3(...c.fwd).normalize();
+  camera.fov = c.fov_y; camera.up.set(...c.up); camera.updateProjectionMatrix();
+  camera.position.copy(pos);
+  controls.target.copy(pos.clone().add(fwd.multiplyScalar(c.depth)));
+  controls.update();
+};
+
+async function load(s) {
+  const id = ++loadId;
+  document.querySelectorAll("#sceneBtns button").forEach(b => b.className = b.dataset.s === s ? "on" : "");
+  const msg = document.createElement("div"); msg.id = "msg"; msg.textContent = "Loading point cloud…";
+  if (!$("msg")) $("view").appendChild(msg);
+  const [m, buf] = await Promise.all([fetch(`data/${s}/pcd.json`, { cache: "no-cache" }).then(r => r.json()),
+                                      fetch(`data/${s}/pcd.bin`, { cache: "no-cache" }).then(r => r.arrayBuffer())]);
+  if (id !== loadId) return;  // a newer scene was picked meanwhile
+  const N = m.n;
+  let o = 0;
+  const take = (T, len) => { const a = new T(buf, o, len); o += len * T.BYTES_PER_ELEMENT; return a; };
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(take(Float32Array, N * 3), 3));
+  geo.setAttribute("pos2", new THREE.BufferAttribute(take(Float32Array, N * 3), 3));
+  geo.setAttribute("rgb1", new THREE.BufferAttribute(take(Uint8Array, N * 3), 3, true));
+  geo.setAttribute("rgb2", new THREE.BufferAttribute(take(Uint8Array, N * 3), 3, true));
+  geo.setAttribute("op1", new THREE.BufferAttribute(take(Uint8Array, N), 1, true));
+  geo.setAttribute("op2", new THREE.BufferAttribute(take(Uint8Array, N), 1, true));
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);  // positions move in the shader: never frustum-cull
+  if (pts) { scene.remove(pts); pts.geometry.dispose(); }
+  pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  meta = m;
+  if (parent !== window) parent.postMessage({ pcdScene: s }, "*");  // the page shows this scene's input views
+  setBox(); home();
+  if (gsOn) showGS(homePose());
+  else if ($("msg")) $("msg").remove();
+}
+
+// controls
+let playing = false, dir = -1;
+const setT = v => { mat.uniforms.t.value = v; $("t").value = v;
+  $("s1").className = v <= 0 ? "on" : ""; $("s2").className = v >= 1 ? "on" : ""; };
+const stop = () => { playing = false; $("play").className = ""; };
+$("t").oninput = e => { stop(); setT(+e.target.value); };
+$("play").onclick = () => { playing = !playing; $("play").className = playing ? "on" : ""; };
+// "Gaussians" mode: the real splats (gaussian-splats-3d, Stage 1 or Stage 2 .ksplat; no blending; cropped to the box offline by make_pcdview.py).
+// Camera pose carries over between the two modes.
+let gsOn = false, gsStage = 2, gsViewer = null, gsLoad = 0, GS = null;
+const pose = () => gsViewer ? { pos: gsViewer.camera.position.clone(), target: gsViewer.controls.target.clone() }
+                            : { pos: camera.position.clone(), target: controls.target.clone() };
+const homePose = () => { const c = meta.camera, pos = new THREE.Vector3(...c.pos);
+  return { pos, target: pos.clone().add(new THREE.Vector3(...c.fwd).normalize().multiplyScalar(c.depth)) }; };
+const dropGS = () => { if (gsViewer) { gsViewer.dispose(); gsViewer = null; } $("gs").innerHTML = ""; };
+async function showGS(p) {
+  const id = ++gsLoad;
+  dropGS();
+  if (!$("msg")) { const m = document.createElement("div"); m.id = "msg"; m.textContent = "Loading Gaussians\u2026"; $("view").appendChild(m); }
+  GS = GS || await import("@mkkellogg/gaussian-splats-3d");
+  if (id !== gsLoad || !gsOn) return;
+  const v = new GS.Viewer({ rootElement: $("gs"), cameraUp: meta.camera.up, initialCameraPosition: p.pos.toArray(),
+                            initialCameraLookAt: p.target.toArray(), sharedMemoryForWorkers: false,
+                            sphericalHarmonicsDegree: 1, dynamicScene: false });
+  v.camera.fov = meta.camera.fov_y; v.camera.near = 0.01; v.camera.updateProjectionMatrix();
+  v.perspectiveControls.stopListenToKeyEvents();
+  await v.addSplatScene(`data/${meta.scene}/gs_crop${gsStage}.ksplat`, { format: GS.SceneFormat.KSplat, showLoadingUI: false });
+  if (id !== gsLoad || !gsOn) { v.dispose(); return; }
+  gsViewer = v; v.start();
+  if ($("msg")) $("msg").remove();
+}
+const setStageBtns = () => { if (gsOn) { $("s1").className = gsStage === 1 ? "on" : ""; $("s2").className = gsStage === 2 ? "on" : ""; }
+                             else setT(mat.uniforms.t.value); };
+const setMode = on => {
+  if (on === gsOn) return;
+  const p = pose();
+  gsOn = on; stop();
+  document.querySelectorAll("[data-m]").forEach(b => b.className = (b.dataset.m === "gs") === on ? "on" : "");
+  $("tRow").hidden = on; $("play").hidden = on; $("gs").hidden = !on; renderer.domElement.style.display = on ? "none" : "";
+  if (on) { gsStage = mat.uniforms.t.value < 0.5 ? 1 : 2; showGS(p); }
+  else { dropGS(); camera.position.copy(p.pos); controls.target.copy(p.target); controls.update(); }
+  setStageBtns();
+};
+document.querySelectorAll("[data-m]").forEach(b => b.onclick = () => setMode(b.dataset.m === "gs"));
+const stageClick = k => () => { stop(); if (gsOn) { if (gsStage !== k) { gsStage = k; showGS(pose()); } setStageBtns(); } else setT(k - 1); };
+$("s1").onclick = stageClick(1);
+$("s2").onclick = stageClick(2);
+$("reset").onclick = () => gsOn ? showGS(homePose()) : home();
+
+const scenes = await (await fetch("data/pcd_scenes.json", { cache: "no-cache" })).json();
+for (const [k, s] of Object.keys(scenes).entries()) {
+  const b = document.createElement("button");
+  b.textContent = `Scene ${k + 1}`; b.dataset.s = s; b.onclick = () => load(s);
+  $("sceneBtns").appendChild(b);
+}
+load(Object.keys(scenes)[0]);
+
+let last = performance.now();
+renderer.setAnimationLoop(now => {
+  const dt = (now - last) / 1000; last = now;
+  if (playing) {
+    let v = mat.uniforms.t.value + dir * dt / 2.2;  // seconds per one-way pass
+    if (v <= 0 || v >= 1) { dir = -dir; v = Math.min(1, Math.max(0, v)); }
+    setT(v);
+  }
+  if (gsOn) return;  // the splat viewer draws itself
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

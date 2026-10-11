@@ -1,0 +1,263 @@
+{
+ "version": 1791475364,
+ "err_max": 0.3,
+ "teaser": [
+  "cd9c981e"
+ ],
+ "stage_boxes": {
+  "ec305787": [
+   1,
+   34,
+   18,
+   48
+  ],
+  "1ba74c22": [
+   5,
+   30,
+   36,
+   38
+  ],
+  "946f49be": [
+   1,
+   21,
+   35,
+   47
+  ]
+ },
+ "pipeline": [
+  "8fdc5130",
+  "56452d9c",
+  "af0d7039"
+ ],
+ "pipeline_labels": {
+  "8fdc5130": "Lounge",
+  "56452d9c": "Sculpture",
+  "af0d7039": "Atrium"
+ },
+ "pipeline_shown": 9,
+ "compare": [
+  "8cb2e97d",
+  "df04f580",
+  "08539793",
+  "e9360e7a"
+ ],
+ "compare_labels": {
+  "8cb2e97d": "Speakers",
+  "df04f580": "Temple",
+  "08539793": "Banquet hall",
+  "e9360e7a": "Store aisle"
+ },
+ "stages": [
+  "ec305787",
+  "1ba74c22",
+  "946f49be"
+ ],
+ "frame": {
+  "compare": {
+   "8cb2e97d": 149,
+   "df04f580": 149,
+   "08539793": 141,
+   "e9360e7a": 142
+  },
+  "stages": {
+   "ec305787": 28,
+   "1ba74c22": 6,
+   "946f49be": 149
+  }
+ },
+ "metrics": {
+  "compare": {
+   "8cb2e97d": {
+    "stage2": {
+     "psnr": 30.2799,
+     "lpips": 0.1065,
+     "ssim": 0.9114
+    },
+    "stage1": {
+     "psnr": 27.0593,
+     "lpips": 0.1371,
+     "ssim": 0.8738
+    },
+    "YoNoSplat": {
+     "psnr": 21.1061,
+     "lpips": 0.2168,
+     "ssim": 0.7076
+    },
+    "2Xplat": {
+     "psnr": 23.5087,
+     "lpips": 0.2225,
+     "ssim": 0.775
+    },
+    "ZipSplat": {
+     "psnr": 23.0289,
+     "lpips": 0.2137,
+     "ssim": 0.6902
+    }
+   },
+   "df04f580": {
+    "stage2": {
+     "psnr": 26.3287,
+     "lpips": 0.0843,
+     "ssim": 0.8968
+    },
+    "stage1": {
+     "psnr": 23.9046,
+     "lpips": 0.1222,
+     "ssim": 0.8465
+    },
+    "YoNoSplat": {
+     "psnr": 21.6423,
+     "lpips": 0.1585,
+     "ssim": 0.7557
+    },
+    "2Xplat": {
+     "psnr": 21.2622,
+     "lpips": 0.1851,
+     "ssim": 0.7195
+    },
+    "ZipSplat": {
+     "psnr": 19.7119,
+     "lpips": 0.249,
+     "ssim": 0.5865
+    }
+   },
+   "08539793": {
+    "stage2": {
+     "psnr": 29.6059,
+     "lpips": 0.0916,
+     "ssim": 0.9211
+    },
+    "stage1": {
+     "psnr": 27.2993,
+     "lpips": 0.1188,
+     "ssim": 0.8911
+    },
+    "YoNoSplat": {
+     "psnr": 20.9456,
+     "lpips": 0.2179,
+     "ssim": 0.6976
+    },
+    "2Xplat": {
+     "psnr": 23.5294,
+     "lpips": 0.1747,
+     "ssim": 0.8184
+    },
+    "ZipSplat": {
+     "psnr": 23.8137,
+     "lpips": 0.188,
+     "ssim": 0.7499
+    }
+   },
+   "e9360e7a": {
+    "stage2": {
+     "psnr": 26.4081,
+     "lpips": 0.0863,
+     "ssim": 0.9301
+    },
+    "stage1": {
+     "psnr": 24.1843,
+     "lpips": 0.1177,
+     "ssim": 0.9008
+    },
+    "YoNoSplat": {
+     "psnr": 20.5094,
+     "lpips": 0.1806,
+     "ssim": 0.7692
+    },
+    "2Xplat": {
+     "psnr": 20.6115,
+     "lpips": 0.2014,
+     "ssim": 0.7707
+    },
+    "ZipSplat": {
+     "psnr": 20.0685,
+     "lpips": 0.235,
+     "ssim": 0.6789
+    }
+   }
+  },
+  "stages": {
+   "ec305787": {
+    "stage2": {
+     "psnr": 29.9069,
+     "lpips": 0.0759,
+     "ssim": 0.9411
+    },
+    "stage1": {
+     "psnr": 26.1637,
+     "lpips": 0.1017,
+     "ssim": 0.9102
+    },
+    "YoNoSplat": {
+     "psnr": 24.8753,
+     "lpips": 0.1126,
+     "ssim": 0.8684
+    },
+    "2Xplat": {
+     "psnr": 22.1174,
+     "lpips": 0.1999,
+     "ssim": 0.7802
+    },
+    "ZipSplat": {
+     "psnr": 26.4268,
+     "lpips": 0.1087,
+     "ssim": 0.8946
+    }
+   },
+   "1ba74c22": {
+    "stage2": {
+     "psnr": 30.5539,
+     "lpips": 0.1143,
+     "ssim": 0.9139
+    },
+    "stage1": {
+     "psnr": 27.7006,
+     "lpips": 0.1376,
+     "ssim": 0.8938
+    },
+    "YoNoSplat": {
+     "psnr": 23.7347,
+     "lpips": 0.174,
+     "ssim": 0.8511
+    },
+    "2Xplat": {
+     "psnr": 25.0489,
+     "lpips": 0.1725,
+     "ssim": 0.862
+    },
+    "ZipSplat": {
+     "psnr": 25.2892,
+     "lpips": 0.1389,
+     "ssim": 0.8881
+    }
+   },
+   "946f49be": {
+    "stage2": {
+     "psnr": 30.0274,
+     "lpips": 0.1059,
+     "ssim": 0.9199
+    },
+    "stage1": {
+     "psnr": 26.7047,
+     "lpips": 0.1336,
+     "ssim": 0.8947
+    },
+    "YoNoSplat": {
+     "psnr": 22.576,
+     "lpips": 0.1725,
+     "ssim": 0.7915
+    },
+    "2Xplat": {
+     "psnr": 23.2162,
+     "lpips": 0.2109,
+     "ssim": 0.7996
+    },
+    "ZipSplat": {
+     "psnr": 24.4163,
+     "lpips": 0.1735,
+     "ssim": 0.7909
+    }
+   }
+  }
+ }
+}

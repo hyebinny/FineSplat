@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FineSplat</title>
+<style>
+  /* dark look matching the demo video: black ground, light gray text, burnt-orange and blue accents,
+     DejaVu Sans (the demo's typeface), shipped in assets/fonts */
+  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Bold.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
+  @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Oblique.ttf") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
+  :root {
+    color-scheme: dark;
+    --bg: #000000; --fg: #e4e4e7; --muted: #9b9ba3; --line: #2a2c31;
+    --chip: #15161a; --accent: #ee6a33; --accent-fg: #0b0b0c; --blue: #3f7cf0;
+    --panel: #0c0e12; --rule: #5a5d66; --band: #16181d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.65 "DejaVu Sans", Verdana, "Segoe UI", sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 80px; }
+  h1 { font-size: 44px; margin: 0 0 4px; text-align: center; }
+  h2 { font-size: 38px; margin: 64px 0 6px; color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .center { text-align: center; }
+  video { display: block; width: 100%; }
+
+  /* header */
+  .hero { text-align: center; margin-bottom: 24px; }
+  .title-card { padding: 8px 0 4px; margin-bottom: 20px; }
+  .logo { display: block; width: 100%; max-width: 600px; height: auto; margin: 0 auto 12px; }
+  .title-card .subtitle { margin: 0; }
+  .subtitle { font-size: 22px; margin: 0 0 16px; color: #fff; }
+  .authors { font-size: 18px; margin: 0 0 10px; color: var(--muted); }
+  .affil { color: var(--muted); margin: 0; font-size: 14px; }
+  .affil.note { font-size: 14px; margin-top: 8px; }
+  .affil.uni { color: var(--blue); font-size: 17px; }
+  .authors a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+  .authors a:hover { text-decoration-color: currentColor; }
+  .eq { color: var(--blue); font-weight: 700; }
+  .links { display: flex; justify-content: center; gap: 8px; margin-top: 16px; }
+  .btn { padding: 6px 16px; border-radius: 999px; background: var(--fg); color: var(--bg);
+         text-decoration: none; font-size: 16px; font-weight: 500; }
+  .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+
+  /* text, figures, tables */
+  .prose { text-align: justify; margin: 0; }
+  .bib-wrap { position: relative; }
+  .bib-wrap .copy { position: absolute; top: 10px; right: 10px; font-size: 13px; padding: 3px 12px;
+                   display: inline-flex; align-items: center; gap: 6px; }
+  .bib { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+         overflow-x: auto; font: 13px/1.5 "DejaVu Sans Mono", Menlo, Consolas, monospace; color: var(--fg); }
+  h3 { font-size: 23px; margin: 28px 0 6px; }
+  h3 .tag-stage { color: var(--accent); }
+  /* blue, the demo's second accent: key terms in Method */
+  .prose b, .prose-list b { color: var(--blue); }
+  .prose-list { margin: 0; padding-left: 20px; }
+  .prose-list li { margin-bottom: 6px; }
+  .prose + .sub, .prose-list + .sub { margin-top: 14px; }
+  figure { margin: 16px 0 0; }
+  figure img { display: block; width: 100%; height: auto; padding: 16px; border-radius: 14px; background: #fff; }  /* white card around paper figures */
+  figure.plot img { padding: 0; background: none; border-radius: 0; }
+  /* dots running along the plot's two arrows (end points from assets/gs_vs_psnr.json, see scripts/make_plot.py) */
+  figure.plot { position: relative; }
+  .plot-dot { position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; opacity: 0;
+              background: var(--c); box-shadow: 0 0 4px 1px var(--c), 0 0 12px 3px var(--c);
+              animation: plot-run 2.8s cubic-bezier(.45, 0, .55, 1) infinite; }
+  @keyframes plot-run {
+    0% { left: var(--x0); top: var(--y0); opacity: 0; }
+    15%, 80% { opacity: 1; }
+    100% { left: var(--x1); top: var(--y1); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .plot-dot { display: none; } }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; text-align: center; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 56px 0 0; }
+  hr + h2 { margin-top: 40px; }
+
+  .demo { width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 8px; }
+  .hero + .detail { margin-top: 28px; }
+  h2 + .demo { margin-top: 20px; }
+  .demo video { width: 100%; height: 100%; border: 0; display: block; background: #000; }
+
+  /* teaser */
+  .teaser-labels { display: grid; grid-template-columns: repeat(2, 1fr); text-align: center;
+                   font-size: 16px; font-weight: 400; margin-top: 6px; }
+  .teaser-labels .ours { color: var(--accent); font-weight: 700; }
+  .teaser video { border-radius: 6px; }
+  /* plot (square) on the left, the 2 x 2 videos on the right; stacked on narrow screens */
+  .detail { display: grid; grid-template-columns: 1.25fr 1fr; gap: 24px; align-items: center; margin-top: 24px; }
+  .detail figure { margin: 0; }
+  @media (max-width: 700px) { .detail { grid-template-columns: 1fr; } }
+  .teaser-labels + video { margin-top: 10px; }
+
+  /* pipeline: inputs in one row, arrow down, gsplat orbit video (FineSplat | ZipSplat) */
+  .pipe { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .inputs { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; width: 100%;
+            padding: 12px; border-radius: 14px; background: var(--panel); border: 2px solid var(--line); }
+  .inputs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 3px; }
+  .arrow { display: flex; color: var(--muted); transform: rotate(90deg); }
+  /* the orbit video is 2 x 224 px wide; show it at 1.5x (672 px) instead of stretching it to the column */
+  .orbit { width: 100%; max-width: 802px; }  /* 130 px tag column + the 672 px video */
+  .orbit-labels { display: grid; grid-template-columns: 1fr 1fr; text-align: center; font-weight: 600; margin-bottom: 6px; }
+  .orbit-labels .ours { color: var(--accent); }
+  .tok-note { display: block; font-weight: 700; font-size: 15px; color: var(--blue); }
+  .gs-count { display: block; font-weight: 400; font-size: 14px; color: var(--muted); }
+  .orbit video { display: block; width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+  /* each video row: a rounded-box tag on the left (looks like a button, not clickable), the video on the right;
+     the labels and the slider line up with the video column */
+  .orbit-line { display: grid; grid-template-columns: 108px 1fr; gap: 22px; align-items: center; }
+  .orbit-line + .orbit-line { margin-top: 8px; }
+  .orbit-labels, .scrub { margin-left: 130px; }
+  .orbit-tag { padding: 10px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--chip);
+               color: var(--fg); font-size: 14px; font-weight: 700; line-height: 1.3; text-align: center; white-space: nowrap; }
+  @media (max-width: 560px) {
+    .orbit-line { grid-template-columns: 1fr; gap: 6px; }
+    .orbit-labels, .scrub { margin-left: 0; }
+    .orbit-tag { justify-self: center; } .orbit-tag br { display: none; }
+  }
+  .scrub { display: flex; align-items: center; gap: 12px; margin-top: 10px; color: var(--muted); font-size: 15px; }
+  .scrub input { flex: 1; accent-color: var(--accent); }
+  .cap { font-size: 14px; color: var(--muted); text-align: center; margin-top: 6px; }
+  @media (max-width: 760px) {
+    .inputs { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  /* picker + compare */
+  .row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 12px 0; }
+  #sceneBtns, #stages { margin-top: 32px; }  /* gap between a section's text and its visuals */
+  button { font: inherit; font-size: 15px; padding: 4px 12px; border-radius: 999px;
+           border: 1px solid var(--line); background: var(--chip); color: var(--fg); cursor: pointer; }
+  button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+  .stage { position: relative; width: 100%; max-width: 560px; margin: 0 auto; aspect-ratio: 1;
+           user-select: none; touch-action: none; cursor: ew-resize; border-radius: 8px; overflow: hidden; }
+  .stage img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+  .stage img.right { clip-path: inset(0 0 0 50%); }
+  .divider { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
+             background: #fff; box-shadow: 0 0 4px rgba(0,0,0,.6); pointer-events: none; }
+  .divider::after { content: "\2194"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                    width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #000;
+                    display: grid; place-items: center; font-size: 16px; }
+  .tag { position: absolute; top: 8px; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+         background: rgba(0,0,0,.6); color: #fff; pointer-events: none; white-space: nowrap; }
+  .tag.l { left: 8px; } .tag.r { right: 8px; }
+  .hl { position: absolute; border: 3px solid #e11d1d; border-radius: 4px; pointer-events: none; }
+
+  .stages { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+  .stages > div { flex: 0 1 calc((100% - 24px) / 3); }  /* 3 per row, last row centered */
+  .stages .cap b { color: var(--fg); }
+  /* Numbers: one table per dataset, picked with the buttons */
+  .num-wrap { margin-top: 20px; }
+  .num-table { border-collapse: collapse; margin: 0 auto; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .num-table th, .num-table td { padding: 5px 9px; text-align: center; border-bottom: 1px solid var(--line); }
+  .num-table th:first-child, .num-table td:first-child { text-align: left; padding-right: 16px; }
+  .num-table thead th { color: var(--muted); font-weight: 600; }
+  .num-table .grp { border-left: 1px solid var(--line); }
+  .num-table tr.ours td, .num-table tr.ours b { color: var(--accent); font-weight: 700; }  /* ours: whole row orange, bold */
+  .num-table tr.pruned td { color: #fff; }
+  .num-table tr.in td { color: var(--muted); opacity: .7; }
+  .num-table b { color: var(--fg); font-weight: 700; }
+  .num-table tr.setting th { text-align: left; color: var(--fg); font-weight: 700; padding-top: 14px; }
+  .num-note { font-size: 13px; color: var(--muted); text-align: center; margin-top: 10px; }
+  /* inference time: under the DL3DV table, same style as the benchmark tables */
+  .num-head { color: #fff; }
+  .time-head { margin-top: 48px; }
+  .time-wrap { margin-top: 16px; }
+  .table-wrap { overflow-x: auto; }
+  #cmpAll .cap { font-size: 13px; }
+  #cmpAll .tag { font-size: 11px; }
+  /* compare captions: 3-column grid so the "|" of both lines line up */
+  .cap2 { display: grid; grid-template-columns: 1fr auto 1fr; column-gap: 8px; }
+  .cap2 > :nth-child(3n+1) { text-align: right; } .cap2 > :nth-child(3n) { text-align: left; } .cap2 i { font-style: normal; }
+  #cmpAll { margin-top: 32px; }
+  #cmpAll .stages { margin-top: 24px; }  /* one row per scene */
+  #cmpAll .stages > div { flex-basis: calc((100% - 36px) / 4); }  /* GT + 3 baselines */
+  .gain { color: var(--blue); font-weight: 700; }
+  .err-stage { margin-top: 6px; }
+  /* Stage 1 / Stage 2 Gaussian positions, interactive (gsview/pcd.html, data: scripts/make_pcdview.py) */
+  .pcd-frame { display: block; width: 100%; aspect-ratio: 16 / 10; margin-top: 24px; border: 1px solid var(--line);
+               border-radius: 8px; background: #000; }
+  @media (max-width: 700px) { .pcd-frame { aspect-ratio: 3 / 4; } }
+  .pcd-inputs { margin-top: 10px; }
+  .pcd-cap { margin: 6px 0 0; color: var(--muted); font-size: 13px; text-align: center; }
+  .err-legend { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; font-size: 13px; color: var(--muted); }
+  .err-legend i { width: 160px; height: 10px; border-radius: 2px;  /* matplotlib jet, as in make_media.py */
+    background: linear-gradient(90deg, #00007f, #0028ff, #00d4ff, #7cff79, #ffe500, #ff4600, #7f0000); }
+  @media (max-width: 700px) { .stages > div, #cmpAll .stages > div { flex-basis: 100%; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div class="title-card">
+      <h1><img class="logo" src="assets/logo.png" alt="FineSplat"></h1>
+      <p class="subtitle">Fine Patches, Local Groups, Detailed Splats</p>
+    </div>
+    <p class="authors">
+      <a href="https://github.com/hyebinny" target="_blank" rel="noopener">Hyebin Kim</a><sup class="eq">*</sup>, <a href="https://github.com/HwasikJeong" target="_blank" rel="noopener">Hwasik Jeong</a><sup class="eq">*</sup>, <a href="https://github.com/joonh-park" target="_blank" rel="noopener">Joonhyuk Park</a>,
+      <a href="https://gynjn.github.io/info/" target="_blank" rel="noopener">Gyeongjin Kang</a>, <a href="https://github.com/jungcow" target="_blank" rel="noopener">Jungwoo Kim</a>, <a href="https://github.com/yhyun225" target="_blank" rel="noopener">Younghyun Kim</a>, <a href="https://silverbottlep.github.io/" target="_blank" rel="noopener">Eunbyung Park</a>
+    </p>
+    <p class="affil uni">Yonsei University</p>
+    <p class="affil note"><sup class="eq">*</sup>Equal contribution</p>
+    <!-- TODO: fill in links at release -->
+    <div class="links">
+      <a class="btn" href="#" aria-disabled="true">Paper (arXiv)</a>
+      <a class="btn" href="#" aria-disabled="true">Code</a>
+    </div>
+  </header>
+
+  <div class="detail">
+    <figure class="plot" id="plot">
+      <img src="assets/gs_vs_psnr.png" alt="PSNR versus number of Gaussians on DL3DV with 24 input views: FineSplat reaches higher PSNR with fewer Gaussians than pixel-aligned methods">
+    </figure>
+    <section class="teaser">
+      <video id="teaser1" src="media/teaser_cd9c981e_row1.mp4" autoplay muted loop playsinline></video>
+      <div class="teaser-labels"><div class="ours">FineSplat (ours)</div><div>YoNoSplat</div></div>
+      <video id="teaser2" src="media/teaser_cd9c981e_row2.mp4" autoplay muted loop playsinline></video>
+      <div class="teaser-labels"><div>2Xplat</div><div>ZipSplat</div></div>
+    </section>
+  </div>
+  <p class="num-note">Results on DL3DV (224&times;224 resolution, 24 context views, pose-free setting).</p>
+
+  <hr>
+
+  <h2>Overview</h2>
+  <div class="demo">
+    <video src="media/method.mp4" poster="media/method_poster.jpg" controls playsinline preload="metadata"
+      aria-label="FineSplat method video"></video>
+  </div>
+
+  <hr>
+
+  <h2>Fine Patches</h2>
+  <p class="prose" style="text-align: left">FineSplat works with <b>fine-grained image patches</b>, recovering substantially finer visual
+  details while staying computationally efficient.</p>
+  <div class="row" id="sceneBtns"></div>
+  <div class="pipe" id="pipe">
+    <div class="inputs" id="inputs"></div>
+    <div class="arrow"><svg width="44" height="28" viewBox="0 0 44 28" aria-hidden="true"><path d="M3 14h34M27 5l10 9-10 9"
+      fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div class="orbit">
+      <div class="orbit-labels"><div class="ours">FineSplat (ours)<span class="gs-count">301K Gaussians</span><span class="tok-note">Many fine tokens, 4 Gaussians each</span></div><div>ZipSplat<span class="gs-count">249K Gaussians</span><span class="tok-note">Few coarse tokens, 32 Gaussians each</span></div></div>
+      <div class="orbit-line"><span class="orbit-tag">Rendered</span><video id="orbit" muted playsinline preload="auto"></video></div>
+      <div class="orbit-line"><span class="orbit-tag">Token map</span><video id="orbitTok" muted playsinline preload="auto"></video></div>
+      <div class="scrub"><button id="orbitPlay" aria-label="Play">&#9654; Auto-play</button><input type="range" id="orbitPos" min="0" max="230" value="0" aria-label="Camera position along the trajectory"></div>
+    </div>
+  </div>
+
+  <hr>
+
+  <h2>Local Groups</h2>
+  <p class="prose">Fine patches give Stage 1 a strong initial scene. Stage 2 then further enhances its fine structure
+  and appearance with <b>error feedback</b> and <b>3D grouping</b>: the Stage 1 tokens are lifted into 3D, where tokens
+  that lie close to each other interact, guided by the rendering errors of the input views, and grow into richer, more
+  expressive Gaussian tokens.</p>
+  <div class="stages" id="stages"></div>
+  <div class="err-legend"><span>Error</span><span>0</span><i></i><span>&ge; 0.3</span></div>
+  <iframe class="pcd-frame" src="gsview/pcd.html" title="Gaussian Position Visualization" loading="lazy"></iframe>
+  <div class="inputs pcd-inputs" id="pcdInputs"></div>
+  <p class="pcd-cap">Input views of the scene in the viewer.</p>
+
+  <hr>
+
+  <h2>Detailed Splats</h2>
+  <p class="prose">FineSplat uses <b>far fewer Gaussians</b> than pixel-aligned methods and still
+  reconstructs more detailed scenes than existing methods. Because each Gaussian comes from a small patch, it stays
+  small and local, so thin structures, sharp edges and fine textures such as signboard lettering come through, where
+  other methods blur them or spend many more primitives.</p>
+
+  <div id="cmpAll"></div>
+
+  <hr>
+
+  <h2>Quantitative Results</h2>
+  <h3 class="num-head">Benchmark performance</h3>
+  <p class="prose">Novel view synthesis on the DL3DV benchmark, evaluated in both posed and pose-free settings with
+  a varying number of input views.</p>
+  <!-- numbers:start -->
+  <div class="table-wrap num-wrap" id="num-dl3dv">
+  <table class="num-table">
+    <thead><tr><th rowspan="2">Method</th><th colspan="4" class="grp">6 views</th><th colspan="4" class="grp">12 views</th><th colspan="4" class="grp">24 views</th></tr>
+      <tr><th class="grp"># GS</th><th>PSNR&uarr;</th><th>SSIM&uarr;</th><th>LPIPS&darr;</th><th class="grp"># GS</th><th>PSNR&uarr;</th><th>SSIM&uarr;</th><th>LPIPS&darr;</th><th class="grp"># GS</th><th>PSNR&uarr;</th><th>SSIM&uarr;</th><th>LPIPS&darr;</th></tr></thead>
+    <tbody>
+      <tr class="setting"><th colspan="13">Posed</th></tr>
+      <tr><td>YoNoSplat</td><td class="grp">301K</td><td>24.72</td><td>0.817</td><td>0.139</td><td class="grp">602K</td><td>23.29</td><td>0.773</td><td>0.177</td><td class="grp">1.2M</td><td>22.66</td><td>0.758</td><td>0.192</td></tr>
+      <tr><td>2Xplat</td><td class="grp">301K</td><td>25.22</td><td>0.827</td><td>0.150</td><td class="grp">602K</td><td>24.59</td><td>0.813</td><td>0.169</td><td class="grp">1.2M</td><td>24.35</td><td>0.811</td><td>0.174</td></tr>
+      <tr><td>ZipSplat</td><td class="grp">62K</td><td>23.94</td><td>0.775</td><td>0.169</td><td class="grp">124K</td><td>22.73</td><td>0.718</td><td>0.198</td><td class="grp">249K</td><td>22.54</td><td>0.715</td><td>0.201</td></tr>
+      <tr class="ours"><td>FineSplat (ours)</td><td class="grp">75K</td><td><b>27.33</b></td><td><b>0.871</b></td><td><b>0.115</b></td><td class="grp">151K</td><td><b>27.14</b></td><td><b>0.868</b></td><td><b>0.121</b></td><td class="grp">301K</td><td><b>27.23</b></td><td><b>0.873</b></td><td><b>0.119</b></td></tr>
+      <tr class="pruned"><td>FineSplat (pruned)</td><td class="grp">62K</td><td>27.17</td><td>0.866</td><td>0.126</td><td class="grp">124K</td><td>27.03</td><td>0.864</td><td>0.129</td><td class="grp">249K</td><td>27.16</td><td>0.871</td><td>0.125</td></tr>
+    </tbody>
+    <tbody>
+      <tr class="setting"><th colspan="13">Pose-free</th></tr>
+      <tr><td>YoNoSplat</td><td class="grp">301K</td><td>24.53</td><td>0.804</td><td>0.142</td><td class="grp">602K</td><td>22.93</td><td>0.746</td><td>0.187</td><td class="grp">1.2M</td><td>22.17</td><td>0.720</td><td>0.209</td></tr>
+      <tr><td>2Xplat</td><td class="grp">301K</td><td>25.23</td><td>0.825</td><td>0.151</td><td class="grp">602K</td><td>24.36</td><td>0.799</td><td>0.177</td><td class="grp">1.2M</td><td>24.08</td><td>0.793</td><td>0.185</td></tr>
+      <tr><td>ZipSplat</td><td class="grp">62K</td><td>24.41</td><td>0.789</td><td>0.166</td><td class="grp">124K</td><td>23.50</td><td>0.749</td><td>0.192</td><td class="grp">249K</td><td>23.38</td><td>0.749</td><td>0.193</td></tr>
+      <tr class="ours"><td>FineSplat (ours)</td><td class="grp">75K</td><td><b>27.00</b></td><td><b>0.861</b></td><td><b>0.118</b></td><td class="grp">151K</td><td><b>26.78</b></td><td><b>0.857</b></td><td><b>0.125</b></td><td class="grp">301K</td><td><b>26.82</b></td><td><b>0.857</b></td><td><b>0.127</b></td></tr>
+      <tr class="pruned"><td>FineSplat (pruned)</td><td class="grp">62K</td><td>26.86</td><td>0.857</td><td>0.129</td><td class="grp">124K</td><td>26.69</td><td>0.853</td><td>0.134</td><td class="grp">249K</td><td>26.76</td><td>0.855</td><td>0.133</td></tr>
+    </tbody>
+  </table>
+  <h3 class="num-head time-head">Efficiency</h3>
+  <p class="prose">Although FineSplat works with fine-grained patches, it stays computationally efficient.</p>
+  <div class="table-wrap time-wrap">
+  <table class="num-table">
+    <thead><tr><th rowspan="2">Method</th><th colspan="3" class="grp">Inference time [ms]</th></tr>
+      <tr><th class="grp">6 views</th><th>12 views</th><th>24 views</th></tr></thead>
+    <tbody>
+      <tr><td>YoNoSplat</td><td>211.2</td><td>254.1</td><td>328.0</td></tr>
+      <tr><td>ZipSplat</td><td>122.1</td><td>219.3</td><td>456.8</td></tr>
+      <tr><td>FineSplat (ours)</td><td>143.9</td><td>240.5</td><td>468.5</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="num-note">Average time (ms) to predict the Gaussians of one scene from posed 224&times;224 input views,
+  over DL3DV test scenes.<br>Measured on one NVIDIA B200 GPU with 2&times; Intel Xeon 6960P CPUs.</p>
+  </div>
+  <!-- numbers:end -->
+
+  <hr>
+
+  <h2>Citation</h2>
+  <!-- TODO: replace the arXiv id at release -->
+  <div class="bib-wrap">
+  <button class="copy" id="copyBib" type="button"><svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>
+  <pre class="bib"><code id="bibText">@article{kim2026finesplat,
+  title   = {FineSplat: Fine Patches, Local Groups, Detailed Splats},
+  author  = {Kim, Hyebin and Jeong, Hwasik and Park, Joonhyuk and Kang, Gyeongjin and
+             Kim, Jungwoo and Kim, Younghyun and Park, Eunbyung},
+  journal = {arXiv preprint arXiv:XXXX.XXXXX},
+  year    = {2026}
+}</code></pre>
+  </div>
+</main>
+
+<script type="module">
+// Numbers: dataset buttons
+// Citation copy button (clipboard API; falls back to selecting the text and execCommand on plain http)
+document.getElementById("copyBib").onclick = async e => {
+  const text = document.getElementById("bibText").textContent, btn = e.currentTarget;
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const r = document.createRange(); r.selectNodeContents(document.getElementById("bibText"));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); document.execCommand("copy"); sel.removeAllRanges();
+  }
+  const label = btn.querySelector("span");
+  label.textContent = "Copied"; setTimeout(() => { label.textContent = "Copy"; }, 1500);
+};
+
+const NAMES = { gt: "GT", stage1: "Stage 1", stage2: "FineSplat (ours)",
+                YoNoSplat: "YoNoSplat", "2Xplat": "2Xplat", ZipSplat: "ZipSplat" };
+const $ = id => document.getElementById(id);
+const pad3 = n => String(n).padStart(3, "0");
+
+// Drag-to-compare between two images; the right image is clipped from the left edge.
+// Compares sharing a `group` array move their dividers together.
+function Compare(el, group = []) {
+  el.classList.add("stage");
+  el.innerHTML = `<img class="left" alt=""><img class="right" alt="">
+    <div class="divider"></div><div class="tag l"></div><div class="tag r"></div>`;
+  const [L, R] = el.querySelectorAll("img"), div = el.querySelector(".divider");
+  const place = p => { R.style.clipPath = `inset(0 0 0 ${p}%)`; div.style.left = p + "%"; };
+  group.push(place);
+  const split = x => {
+    const b = el.getBoundingClientRect(), p = 100 * Math.min(1, Math.max(0, (x - b.left) / b.width));
+    group.forEach(f => f(p));
+  };
+  el.addEventListener("pointerdown", e => { el.setPointerCapture(e.pointerId); split(e.clientX); });
+  el.addEventListener("pointermove", e => { if (e.buttons) split(e.clientX); });
+  return (left, right, tagL, tagR) => {
+    L.src = left; R.src = right;
+    el.querySelector(".tag.l").textContent = tagL;
+    el.querySelector(".tag.r").textContent = tagR;
+  };
+}
+
+// scenes.json is always revalidated; every media URL carries its build version, so a rebuild never
+// shows stale files even though the server lets the browser cache them.
+(function follow() {  // keep the second video row on the first one's clock
+  const a = $("teaser1"), b = $("teaser2");
+  if (!a.paused && Math.abs(a.currentTime - b.currentTime) > 0.1) b.currentTime = a.currentTime;
+  requestAnimationFrame(follow);
+})();
+
+fetch("assets/gs_vs_psnr.json", { cache: "no-cache" }).then(r => r.json()).then(P => {
+  for (const [k, c] of [["gold", "#f6c24a"], ["orange", "#ee6a33"]]) {  // the plot's arrow colors
+    const [[x0, y0], [x1, y1]] = P[k], dot = document.createElement("span");
+    dot.className = "plot-dot";
+    for (const [n, v] of Object.entries({ x0, y0, x1, y1 })) dot.style.setProperty("--" + n, v * 100 + "%");
+    dot.style.setProperty("--c", c);
+    $("plot").appendChild(dot);
+  }
+});
+
+fetch("data/scenes.json", { cache: "no-cache" }).then(r => r.json()).then(D => {
+  const V = `?v=${D.version}`;
+  // Fine Patches: input images, arrow, two scene videos played together: orbit_color (original colors) above
+  // orbit_tokens (each Gaussian colored by its patch token, opaque). Scene buttons swap both.
+  // The slider scrubs the camera along the target trajectory (FPS as in scripts/make_orbits.py).
+  // Auto-play loops the videos (context view 1 -> 24, then again) and moves the slider with them;
+  // dragging the slider pauses them. The token video follows the color video's clock.
+  const FPS = 30, vid = $("orbit"), tok = $("orbitTok");
+  for (const v of [vid, tok]) { v.loop = true; v.defaultPlaybackRate = v.playbackRate = 0.5; }  // 15 frames/s, as the Detailed Splats videos
+  const showFrame = () => { vid.currentTime = tok.currentTime = (+$("orbitPos").value + 0.5) / FPS; };
+  const setPlaying = on => {
+    if (on) { tok.currentTime = vid.currentTime; vid.play(); tok.play(); } else { vid.pause(); tok.pause(); showFrame(); }
+    $("orbitPlay").innerHTML = on ? "&#10074;&#10074; Pause" : "&#9654; Auto-play";
+  };
+  $("orbitPos").oninput = () => { setPlaying(false); showFrame(); };
+  $("orbitPlay").onclick = () => setPlaying(vid.paused);
+  (function follow() {  // keep the slider on the playing frame
+    if (!vid.paused) {
+      $("orbitPos").value = Math.min(+$("orbitPos").max, Math.floor(vid.currentTime * FPS));
+      if (Math.abs(tok.currentTime - vid.currentTime) > 2 / FPS) tok.currentTime = vid.currentTime;  // resync drift
+    }
+    requestAnimationFrame(follow);
+  })();
+  let scene = D.pipeline[0];
+  function load() {
+    for (const b of $("sceneBtns").children) b.className = b.dataset.s === scene ? "on" : "";
+    $("inputs").innerHTML = "";
+    for (let i = 0; i < D.pipeline_shown; i++) {
+      const img = document.createElement("img");
+      img.src = `media/${scene}/inputs/${String(i).padStart(2, "0")}.jpg${V}`; img.alt = "";
+      $("inputs").appendChild(img);
+    }
+    vid.src = `media/${scene}/orbit_color.mp4${V}`;
+    tok.src = `media/${scene}/orbit_tokens.mp4${V}`;
+    vid.addEventListener("loadedmetadata", () => {
+      $("orbitPos").max = Math.round(vid.duration * FPS) - 1;
+      showFrame();
+    }, { once: true });
+  }
+  for (const P of D.pipeline) {
+    const b = document.createElement("button");
+    b.textContent = `Scene ${D.pipeline.indexOf(P) + 1}`; b.dataset.s = P;
+    b.onclick = () => { scene = P; $("orbitPos").value = 0; setPlaying(false); load(); };
+    $("sceneBtns").appendChild(b);
+  }
+  load();
+
+  // baseline comparison: one row per scene, one slider for GT and per baseline (GT/baseline | FineSplat)
+  for (const sc of D.compare) {
+    const f = pad3(D.frame.compare[sc]), m = D.metrics.compare[sc], ours = m.stage2.psnr;
+    const row = document.createElement("div");
+    row.className = "stages";
+    $("cmpAll").appendChild(row);
+    for (const b of ["gt", "YoNoSplat", "2Xplat", "ZipSplat"]) {
+      const wrap = document.createElement("div"), box = document.createElement("div");
+      wrap.appendChild(box);
+      // two lines, "|" in one column: "Baseline | FineSplat", then "PSNR | PSNR (+gain)"
+      const [l1, l2, r2] = b === "gt" ? ["GT", "&ndash;", `<b>${ours.toFixed(2)}</b>`] : [NAMES[b], m[b].psnr.toFixed(2),
+        `<b>${ours.toFixed(2)}</b> <span class="gain">(+${(ours - m[b].psnr).toFixed(2)})</span>`];
+      wrap.insertAdjacentHTML("beforeend", `<div class="cap cap2"><span>${l1}</span><i>|</i><b>FineSplat</b>` +
+        `<span>${l2}</span><i>|</i><span>${r2}</span></div>`);
+      row.appendChild(wrap);
+      Compare(box)(`media/${sc}/${f}_${b}.png${V}`, `media/${sc}/${f}_stage2.png${V}`, NAMES[b], NAMES.stage2);
+    }
+  }
+
+  // stage 1 vs stage 2: side by side
+  for (const s of D.stages) {
+    const wrap = document.createElement("div"), box = document.createElement("div"), m = D.metrics.stages[s];
+    const errBox = document.createElement("div");  // error maps (|render - GT|) under the renders
+    const f = pad3(D.frame.stages[s]);
+    errBox.className = "err-stage";
+    wrap.append(box, errBox);
+    wrap.insertAdjacentHTML("beforeend",
+      `<div class="cap">Stage 1: ${m.stage1.psnr.toFixed(2)} &rarr; <b>Stage 2: ${m.stage2.psnr.toFixed(2)}</b>` +
+      ` <span class="gain">(+${(m.stage2.psnr - m.stage1.psnr).toFixed(2)})</span></div>`);
+    $("stages").appendChild(wrap);
+    const linked = [];  // rendering and error-map dividers move together
+    Compare(box, linked)(`media/${s}/${f}_stage1.png${V}`, `media/${s}/${f}_stage2.png${V}`, "Stage 1", "Stage 2");
+    Compare(errBox, linked)(`media/${s}/${f}_stage1_err.png${V}`, `media/${s}/${f}_stage2_err.png${V}`, "Stage 1", "Stage 2");
+    const b = D.stage_boxes[s];  // red box marking the region Stage 2 improves most
+    if (b) for (const el of [box, errBox]) el.insertAdjacentHTML("beforeend",
+      `<div class="hl" style="left:${b[0]}%;top:${b[1]}%;width:${b[2]}%;height:${b[3]}%"></div>`);
+  }
+});
+// Gaussian position viewer (iframe) reports its scene; show that scene's input views under it
+addEventListener("message", e => {
+  const s = e.data && e.data.pcdScene, box = document.getElementById("pcdInputs");
+  if (typeof s !== "string" || !/^[0-9a-f]{8}$/.test(s)) return;
+  box.innerHTML = Array.from({ length: 9 }, (_, i) => `<img src="gsview/data/${s}/inputs/${String(i).padStart(2, "0")}.jpg" alt="">`).join("");
+});
+</script>
+</body>
+</html>
