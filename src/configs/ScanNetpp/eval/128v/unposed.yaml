@@ -59,16 +59,13 @@ inference:
   save_gaussians: false
   visualize: false
   prune_mode: contribution
-  prune_keep_per_view:
-  - 10368
+  prune_keep_per_view: [10368]
   epa_steps: 200
   checkpoint:
     ckpt_path: pretrained_weights/finesplat_224res.pt
     use_ema: true
     full_state: true
-  eval_steps:
-  - 0
-  - 4
+  eval_steps: [0, 4]
 stage2:
   num_steps: 4
   network:

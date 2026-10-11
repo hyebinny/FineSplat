@@ -42,30 +42,14 @@ data:
   resize_h: 224
   resize_w: 224
 training:
-  num_views:
-  - 6
-  - 12
-  - 24
-  - 32
-  target_views:
-  - 6
-  - 6
-  - 6
-  - 1
-  batch_size_per_gpu:
-  - 4
-  - 2
-  - 1
-  - 1
+  num_views: [6, 12, 24, 32]
+  target_views: [6, 6, 6, 1]
+  batch_size_per_gpu: [4, 2, 1, 1]
   res_dict:
-  - - 224
-    - 224
-  - - 224
-    - 224
-  - - 224
-    - 224
-  - - 224
-    - 224
+  - [224, 224]
+  - [224, 224]
+  - [224, 224]
+  - [224, 224]
 inference:
   if_inference: true
   ckpt_path: pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt
