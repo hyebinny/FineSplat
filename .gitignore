@@ -94,3 +94,6 @@ src/model/resplat_refiner.py
 
 # RE10K scene lists point at a local copy of the dataset
 src/data/RE10K/*.txt
+
+# local dataset symlinks (data.root / data.data_path)
+datasets/

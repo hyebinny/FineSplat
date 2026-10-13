@@ -28,7 +28,7 @@ model:
   da_model_weights_path: ''
   mvp_weights_path: ''
 data:
-  data_path: /scratch/y5ryan/datasets/scannetpp_test/scannetpp/test
+  data_path: datasets/scannetpp/test
   json_path: src/data/ScanNetpp/eval_ctx128_tgt16.json
   input_frame_select_type: json_context
   target_frame_select_type: json_target

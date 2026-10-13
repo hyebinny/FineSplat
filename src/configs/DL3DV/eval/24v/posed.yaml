@@ -28,7 +28,7 @@ model:
   da_model_weights_path: ''
   mvp_weights_path: ''
 data:
-  root: /scratch/y5ryan/datasets/dl3dv_480
+  root: datasets/dl3dv_480
   split: test
   scene_list: src/data/DL3DV/test_scenes.txt
   json_path: src/data/DL3DV/eval_ctx24_tgt8.json
