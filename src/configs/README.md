@@ -20,10 +20,9 @@ Paths are relative to the repo root. Outputs go next to the repo (`../FineSplat_
 
 ```
 pretrained_weights/
-  finesplat_224res.pt                                FineSplat-224 (Stage 1 + Stage 2, end-to-end); the only file evaluation needs
-  da3_giant.safetensors                              DA3-Giant                  } Stage-1 experts, training only;
-  mvp_patchwise_offset_dl3dv_lr_novdo.pt             MVP appearance expert      } from the DA3 and 2Xplat
-  2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt   Stage 1 (2Xplat)           } releases
+  finesplat_224res.pt      FineSplat-224 (Stage 1 + Stage 2, end-to-end); the only file evaluation needs
+  train/stage1_224res.pt   Stage 1 (2Xplat, with its DA3 and MVP weights); starting point of train/stage2.yaml
+  train/stage2_224res.pt   Stage 2 trained on the frozen Stage 1 (20k); starting point of train/e2e.yaml
 ```
 
 ## Data
@@ -32,7 +31,8 @@ pretrained_weights/
 `<root>/<split>/<id>/opencv_cameras.json` (DL3DV). `data.json_path` fixes the context / target
 frames of every benchmark scene (`src/data/<dataset>/eval_ctx<N>_tgt<M>.json`). RE10K and
 ScanNet++ keep their own loaders (`inference.dataset_name`) and point `data.data_path` at a
-local copy.
+local copy. All configs expect the data under `datasets/` in the repository root
+(`datasets/dl3dv_480`, `datasets/scannetpp/test`; symlinks are fine, the directory is gitignored).
 
 ## Training
 

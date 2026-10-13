@@ -25,10 +25,10 @@ model:
     align_to_pixel: true
     max_dist: 500.0
   da_model_name: da3-giant
-  da_model_weights_path: pretrained_weights/da3_giant.safetensors
-  mvp_weights_path: pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt
+  da_model_weights_path: ''
+  mvp_weights_path: ''
 data:
-  root: /scratch/y5ryan/datasets/dl3dv_480
+  root: datasets/dl3dv_480
   split: train
   scene_list: src/data/DL3DV/train_scenes.txt
   input_frame_select_type: uniform
@@ -52,7 +52,7 @@ training:
   - [224, 224]
 inference:
   if_inference: true
-  ckpt_path: pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt
+  ckpt_path: pretrained_weights/train/stage1_224res.pt
   camera_mode: gt_pose_gt_intr
   pose_optimization: false
 train:

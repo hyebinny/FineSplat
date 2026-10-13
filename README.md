@@ -9,7 +9,7 @@ Yonsei University
 </div>
 
 <div align="center" style="margin-top: 2em; margin-bottom: 1.0em">
-  <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/FineSplat-ArXiv-red" alt="arXiv"></a> <a href="https://hyebinny.github.io/FineSplat/"><img src="https://img.shields.io/badge/FineSplat-Project_Page-blue" alt="Project Page"></a> <a href="https://huggingface.co/hyebinny/FineSplat"><img src="https://img.shields.io/badge/FineSplat-Hugging_Face-yellow" alt="Hugging Face"></a>
+  <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/FineSplat-ArXiv-red" alt="arXiv"></a> <a href="https://hyebinny.github.io/FineSplat/"><img src="https://img.shields.io/badge/FineSplat-Project_Page-blue" alt="Project Page"></a> <a href="https://huggingface.co/HyebinKim/FineSplat"><img src="https://img.shields.io/badge/FineSplat-Hugging_Face-yellow" alt="Hugging Face"></a>
 </div>
 
 <div align="center" style="margin-top: 5.0em; margin-bottom: 1.0em">
@@ -23,45 +23,53 @@ Yonsei University
 git clone https://github.com/hyebinny/FineSplat.git
 cd FineSplat
 
-# 2. Create and activate conda environment
+# 2. Create and activate a conda environment
 conda create -n finesplat python=3.12 -y
 conda activate finesplat
 
-# 3. Install dependencies (adjust PyTorch and CUDA version to match your system)
+# 3. Install dependencies (adjust the PyTorch and CUDA versions to match your system)
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 
-# 4. gsplat: intrinsic gradient version
+# 4. gsplat
 pip install git+https://github.com/QitaoZhao/gsplat.git --no-build-isolation
 ```
 
 ## Checkpoints
 
-We release one checkpoint, FineSplat-224, which holds the whole model (Stage 1 and Stage 2,
-fine-tuned end-to-end). Download it from [🤗 Hugging Face](https://huggingface.co/hyebinny/FineSplat)
-and place it at:
+All checkpoints are on [🤗 Hugging Face](https://huggingface.co/HyebinKim/FineSplat):
 
+| File | Content | Used by |
+| ---- | ------- | ------- |
+| `finesplat_224res.pt` | FineSplat-224: Stage 1 + Stage 2, fine-tuned end-to-end | evaluation |
+| `train/stage1_224res.pt` | Stage 1 (2Xplat, with its DA3 and MVP weights) | training, Stage 2 |
+| `train/stage2_224res.pt` | Stage 2 trained on the frozen Stage 1 | training, end-to-end |
+
+```bash
+hf download HyebinKim/FineSplat finesplat_224res.pt --local-dir pretrained_weights   # evaluation
+hf download HyebinKim/FineSplat --include "train/*" --local-dir pretrained_weights    # training
 ```
-path/to/FineSplat/pretrained_weights/finesplat_224res.pt
-```
 
-Nothing else is needed for evaluation: the DA3, MVP and 2Xplat weights are part of this file, so the
-evaluation configs leave `model.da_model_weights_path`, `model.mvp_weights_path` and
-`inference.ckpt_path` empty.
-
-Training Stage 2 from scratch starts from the Stage-1 experts instead; see [Training](#training).
+so that they sit under `path/to/FineSplat/pretrained_weights/`.
 
 ## Datasets
 
-FineSplat uses the same data as [2Xplat](https://github.com/HwasikJeong/2Xplat). Download DL3DV from
-the [official repository](https://huggingface.co/DL3DV); we use **DL3DV-ALL-480P** at 224x224. Each
+Download DL3DV from the [official repository](https://huggingface.co/DL3DV); we use **DL3DV-ALL-480P** at 224x224. Each
 scene is a folder `<split>/<scene id>/` holding the images and an `opencv_cameras.json`.
 
-Point the configs at your copy with three keys under `data`:
+The configs expect the data under `datasets/` in the repository root (a symlink is fine):
+
+```
+datasets/
+  dl3dv_480/<split>/<scene id>/      DL3DV-ALL-480P, data.root (train / test)
+  scannetpp/test/*.torch             ScanNet++ chunks (cross-dataset evaluation), data.data_path
+```
+
+and address DL3DV with three keys under `data`:
 
 ```yaml
 data:
-  root: /path/to/dl3dv_480          # dataset root
+  root: datasets/dl3dv_480          # dataset root
   split: test                       # or train
   scene_list: src/data/DL3DV/test_scenes.txt   # scene ids, one per line
 ```
@@ -71,14 +79,11 @@ context / target frames per scene are fixed by `data.json_path`
 (`src/data/DL3DV/eval_ctx{6,12,24}_tgt8.json`, from YoNoSplat). `src/data/DL3DV/train_scenes.txt`
 lists the 10,350 training scenes.
 
-RE10K and ScanNet++ (cross-dataset evaluation) have their own loaders, selected by
-`inference.dataset_name`, and take `data.data_path` (a text file of per-scene `scene_meta.json` paths
-for RE10K; the directory of `.torch` chunks for ScanNet++). Their context / target indices are in
-`src/data/RE10K/` and `src/data/ScanNetpp/`.
+The context / target indices of RE10K and ScanNet++ are in `src/data/RE10K/` and `src/data/ScanNetpp/`, respectively.
 
 ## Evaluation
 
-`src/configs/<dataset>/eval/<N>v/` has one config per camera setting:
+`src/configs/<dataset>/eval/<N>v/` has a config per camera setting:
 `DL3DV/eval/{6v,12v,24v}/{posed,unposed}.yaml`, `RE10K/eval/6v/{posed,unposed}.yaml`,
 `ScanNetpp/eval/{32v,64v,128v}/unposed.yaml`.
 
@@ -117,23 +122,21 @@ Useful `inference.*` options (in the yaml, or appended to the command as `infere
 
 ## Training
 
-Stage 2 is first trained on a frozen Stage 1 with GT cameras, then the whole model is fine-tuned
+Stage 2 is first trained on a frozen Stage 1 with GT cameras, and then the whole model is fine-tuned
 end-to-end in the pose-free setting. Both read `data.root` / `data.scene_list` as above and log a
 fixed watchlist of scenes to W&B (`train.wandb`, API key in `src/configs/api_keys.yaml`).
 
-Training needs the Stage-1 experts, which we do not redistribute: the geometry expert
-[DA3-Giant](https://huggingface.co/depth-anything/DA3-GIANT-1.1/resolve/main/model.safetensors)
-and the patch-aligned appearance expert / 2Xplat checkpoint from
-[2Xplat](https://github.com/HwasikJeong/2Xplat). The training configs expect them at
-`pretrained_weights/da3_giant.safetensors`, `pretrained_weights/mvp_patchwise_offset_dl3dv_lr_novdo.pt`
-and `pretrained_weights/2Xplat/2xplat_patchwise_offset_dl3dv_lr_novdo.pt`.
+Both start from the `train/` checkpoints above: `stage2.yaml` loads Stage 1 from
+`pretrained_weights/train/stage1_224res.pt` (`inference.ckpt_path`), and `e2e.yaml` additionally
+initializes Stage 2 from `pretrained_weights/train/stage2_224res.pt` (`train.init_stage2_ckpt`), which
+is what the Stage-2 run below produces.
 
 ```bash
-# Stage 2 on the frozen Stage 1: 20k iterations, 4 GPUs
+# Stage 2 on the frozen Stage 1
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node 4 -m src.commands.train_finesplat \
   --config src/configs/DL3DV/train/stage2.yaml
 
-# end-to-end fine-tuning: 10k iterations, 8 GPUs, initialised from the run above
+# end-to-end fine-tuning
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node 8 -m src.commands.train_finesplat \
   --config src/configs/DL3DV/train/e2e.yaml
 ```
