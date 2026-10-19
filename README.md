@@ -46,8 +46,7 @@ All checkpoints are on [🤗 Hugging Face](https://huggingface.co/HyebinKim/Fine
 | `train/stage2_224res.pt` | Stage 2 trained on the frozen Stage 1 | training, end-to-end |
 
 ```bash
-hf download HyebinKim/FineSplat finesplat_224res.pt --local-dir pretrained_weights   # our final model
-hf download HyebinKim/FineSplat --include "train/*" --local-dir pretrained_weights
+hf download HyebinKim/FineSplat finesplat_224res.pt --local-dir pretrained_weights
 ```
 
 so that they sit under `path/to/FineSplat/pretrained_weights/`.
@@ -61,16 +60,15 @@ The configs expect the data under `datasets/` in the repository root:
 
 ```
 datasets/
-  dl3dv_480/<split>/<scene id>/      DL3DV-ALL-480P, data.root (train / test)
+  dl3dv_480/<split>/<scene id>/      # DL3DV-ALL-480P, data.root (train / test)
 ```
 
-The context / target view indices for RE10K, ScanNet++ and Mip-NeRF 360 are in `src/data/RE10K/`, `src/data/ScanNetpp/` and `src/data/MipNeRF360/`.
+The context / target view indices of the evaluation datasets are in `src/data/<dataset>/`.
 
 ## Evaluation
 
 `src/configs/<dataset>/eval/<N>v/` has a config per camera setting:
-`DL3DV/eval/{6v,12v,24v}/{posed,unposed}.yaml`, `RE10K/eval/6v/{posed,unposed}.yaml`,
-`ScanNetpp/eval/{32v,64v,128v}/{posed,unposed}.yaml`, `MipNeRF360/eval/{32v,64v,128v}/{posed,unposed}.yaml`.
+`DL3DV/eval/{6v,12v,24v}/{posed,unposed}.yaml`
 
 | Setting | Context cameras | Target cameras |
 | ------- | --------------- | -------------- |
