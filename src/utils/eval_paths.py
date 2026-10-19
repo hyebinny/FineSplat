@@ -37,7 +37,7 @@ def load_eval_config(argv=None):
     return config, (Path(out_dir[0]) if out_dir else None)
 
 
-DATASETS = ("dl3dv", "re10k", "scannetpp")
+DATASETS = ("dl3dv", "re10k", "scannetpp", "mipnerf360")
 CAMERA_MODES = ("gt_pose_gt_intr", "pred_pose_gt_intr", "pred_pose_pred_intr")
 
 

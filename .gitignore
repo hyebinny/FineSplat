@@ -104,3 +104,4 @@ src/configs/dygroup/
 # local-only benchmark scripts
 src/commands/eval_passes.py
 src/commands/eval_tto.py
+src/model/tto.py

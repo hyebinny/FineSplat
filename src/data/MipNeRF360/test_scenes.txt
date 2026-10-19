@@ -1,0 +1,6 @@
+bicycle
+bonsai
+counter
+garden
+kitchen
+room
