@@ -97,3 +97,10 @@ src/data/RE10K/*.txt
 
 # local dataset symlinks (data.root / data.data_path)
 datasets/
+
+# local experiment configs (dynamic view-group model)
+src/configs/dygroup/
+
+# local-only benchmark scripts
+src/commands/eval_passes.py
+src/commands/eval_tto.py
