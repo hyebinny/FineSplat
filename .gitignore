@@ -78,7 +78,7 @@ runs/
 checkpoints/
 
 # Data & weights
-pretrained_weights/
+pretrained_weights
 *.pt
 *.pth
 *.safetensors
