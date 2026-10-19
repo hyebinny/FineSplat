@@ -98,7 +98,7 @@
   .demo { width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 8px; }
   .hero + .detail { margin-top: 28px; }
   h2 + .demo { margin-top: 20px; }
-  .demo video { width: 100%; height: 100%; border: 0; display: block; background: #000; }
+  .demo video { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
 
   /* teaser */
   .teaser-labels { display: grid; grid-template-columns: repeat(2, 1fr); text-align: center;
@@ -251,8 +251,10 @@
 
   <h2>Overview</h2>
   <div class="demo">
-    <video src="media/method.mp4?v=705b1e0a" poster="media/method_poster.jpg?v=6f1d0ff2" controls playsinline preload="metadata"
-      aria-label="FineSplat method video"></video>
+    <video class="only-light" src="media/method_light.mp4?v=ba9420e9" poster="media/method_light_poster.jpg?v=a8dcaf09" controls playsinline
+      preload="metadata" aria-label="FineSplat method video"></video>
+    <video class="only-dark" src="media/method.mp4?v=705b1e0a" poster="media/method_poster.jpg?v=6f1d0ff2" controls playsinline
+      preload="metadata" aria-label="FineSplat method video"></video>
   </div>
 
   <hr>
@@ -410,6 +412,7 @@ function Compare(el, group = []) {
 $("themeBtn").onclick = () => {
   const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = t;
+  document.querySelectorAll(".demo video").forEach(v => v.pause());  // the hidden one must not keep playing
   try { localStorage.setItem("theme", t); } catch (e) {}
 };
 
