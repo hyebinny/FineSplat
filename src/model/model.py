@@ -5,7 +5,9 @@ images to a 3D Gaussian field. Each patch is a ``gaussian_side x gaussian_side``
 sub-grid of Gaussians; each Gaussian owns a ``gaussian_stride x gaussian_stride``
 pixel cell and predicts a bounded image-space offset inside it."""
 
+import contextlib
 import os
+import random
 import torch
 import traceback
 import torch.nn.functional as F
@@ -351,6 +353,7 @@ class AppearanceExpert:
         opacity_bias: float,
         max_dist: float,
         inference_mode: bool,
+        dynamic_grouping: bool = False,
     ):
         self.image_tokenizer = image_tokenizer
         self.stage1 = stage1
@@ -378,7 +381,32 @@ class AppearanceExpert:
         self.scale_max = scale_max
         self.opacity_bias = opacity_bias
         self.max_dist = max_dist
+        # Training only: sample the stage-2 view-group size per forward (see grouping()).
+        self.dynamic_grouping = dynamic_grouping
+        self.training = True  # mirrors the owning TwoExpertModel (set in its train())
         self.inference_mode = inference_mode
+
+    def sample_group_size(self, v: int) -> int:
+        """A divisor of v in [2, v), larger groups more likely; the fixed size if none."""
+        candidates = [g for g in range(2, v) if v % g == 0]
+        if not candidates:
+            return self.group_size
+        return random.choices(candidates, weights=candidates)[0]
+
+    @contextlib.contextmanager
+    def grouping(self, v: int, enabled: bool):
+        """Run stages 1-3 under a sampled view-group size (dynamic_grouping and enabled).
+
+        All three stages read self.group_size, so the override must span the whole encode."""
+        if not (self.dynamic_grouping and enabled):
+            yield self.group_size
+            return
+        fixed = self.group_size
+        self.group_size = self.sample_group_size(v)
+        try:
+            yield self.group_size
+        finally:
+            self.group_size = fixed
 
     def predict_gaussians(
         self,
@@ -390,10 +418,11 @@ class AppearanceExpert:
         t_c2w: torch.Tensor,           # (B, T, 4, 4)
     ) -> GaussianField:
         """Run the full three-stage transformer pipeline and decode Gaussian parameters."""
-        _, _, _, h, w = raymap_images.shape
-        x, s1_patch_tokens = self._stage1_tokenize_and_encode(raymap_images)
-        x, s2_patch_tokens = self._stage2_cross_view_and_downsample(x, i_w2c, Ks, h, w)
-        s3_patch_tokens = self._stage3_global_cross_view(x, i_w2c, Ks)
+        _, v, _, h, w = raymap_images.shape
+        with self.grouping(v, enabled=self.training):
+            x, s1_patch_tokens = self._stage1_tokenize_and_encode(raymap_images)
+            x, s2_patch_tokens = self._stage2_cross_view_and_downsample(x, i_w2c, Ks, h, w)
+            s3_patch_tokens = self._stage3_global_cross_view(x, i_w2c, Ks)
         return self._decode_gaussians(
             s1_patch_tokens, s2_patch_tokens, s3_patch_tokens,
             i_fxfycxcy, i_c2w, t_c2w, h, w,
@@ -669,6 +698,7 @@ class TwoExpertModel(nn.Module):
         self.patch_size = config.model.patch_size
         self.num_register_tokens = config.model.num_register_tokens
         self.group_size = config.model.group_size
+        self.dynamic_grouping = bool(config.model.get("dynamic_grouping", False))
         self.head_dim = config.model.head_dim
         self.inter_multi = config.model.inter_multi
         self.qk_norm = config.model.qk_norm
@@ -758,6 +788,7 @@ class TwoExpertModel(nn.Module):
             opacity_bias=self.opacity_bias,
             max_dist=self.max_dist,
             inference_mode=self.inference_mode,
+            dynamic_grouping=self.dynamic_grouping,
         )
 
         if not self.inference_mode:
@@ -859,6 +890,7 @@ class TwoExpertModel(nn.Module):
     def train(self, mode: bool = True):
         """Keeps the loss modules permanently in eval mode."""
         super().train(mode)
+        self.appearance_expert.training = mode
         if not self.inference_mode:
             self.loss_computer.eval()
 

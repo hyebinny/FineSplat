@@ -6,7 +6,8 @@ inference.prune_mode: "contribution" keeps the top prune_keep_per_view * V by me
     the context views (10368/view -> step4_prune/, else step4_contrib<k>pv/); "radsplat" keeps the top-k by
     max blending weight (step4_radsplat<k>pv/); "opacity" thresholds at each tau in prune_taus (step4_prune<tau>/).
 inference.scene_range: [lo, hi) shard; summaries are left to a final pass.
-inference.vis_save: {root, subdir, tag} writes renders to <root>/<tag>_<level>/<subdir>/<scene>/<frame:03d>.png.
+inference.vis_save: {root, subdir, tag} writes renders to <root>/<tag>_<level>/<subdir>/<scene>/<frame:03d>.png
+    (vis_save.dir replaces <tag>_<level>); with cameras: true also <scene>/cameras.json (+ "target_epa" with EPA).
 """
 import json
 import os
@@ -27,7 +28,7 @@ from src.utils.eval_paths import load_eval_config, resolve_out_dir
 from src.utils.metric_utils import export_results, summarize_evaluation
 from src.model.sh_eval import _spherical_harmonics
 from src.utils.camera_utils import fxfycxcy_to_K
-from src.utils.ply_io import SH_C0
+from src.utils.ply_io import SH_C0, save_scene_cameras
 
 
 def select(g, keep):
@@ -177,9 +178,10 @@ def main():
                     keep = torch.zeros_like(scores, dtype=torch.bool)
                     keep[scores.topk(min(t * num_input, len(scores))).indices] = True
                 gp = select(g, keep)
+                aligned = None
                 if base.use_pose_optimization:
                     with torch.enable_grad():
-                        render, _ = base.pose_optimization(
+                        render, aligned = base.pose_optimization(
                             gaussians=gp, t_c2w=cam.pred_t_c2w, t_fxfycxcy=cam.pred_t_fxfycxcy,
                             w=base.width, h=base.height, target_images=tgt["image"],
                         )
@@ -196,10 +198,13 @@ def main():
                     json.dump({"num_gaussians": int(keep.sum()), "num_gaussians_unpruned": keep.numel(),
                                "mode": mode, "level": t}, f)
                 if vis:
-                    vd = Path(vis["root"]) / f"{vis['tag']}_{name(t)}" / vis["subdir"] / scene
+                    vd = Path(vis["root"]) / (vis.get("dir") or f"{vis['tag']}_{name(t)}") / vis["subdir"] / scene
                     os.makedirs(vd, exist_ok=True)
                     for vi, fi in enumerate(frames):
                         torchvision.utils.save_image(render[0, vi].float().clamp(0, 1), vd / f"{fi:03d}.png")
+                    if vis.get("cameras", False):
+                        save_scene_cameras(vd / "cameras.json", cam, inp["index"][0].cpu().numpy(),
+                                           tgt["index"][0].cpu().numpy(), config.data.resize_h, target_epa=aligned)
         torch.cuda.empty_cache()
 
     if config.inference.get("scene_range", None):

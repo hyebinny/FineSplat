@@ -711,10 +711,13 @@ class FineSplat(nn.Module):
             raymap_images, Ks, i_w2c = model._build_raymap_input(
                 input_data, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
             )
-            x, s1 = expert._stage1_tokenize_and_encode(raymap_images)
-            x, s2 = expert._stage2_cross_view_and_downsample(x, i_w2c, Ks, h, w)
-            s3 = expert._stage3_global_cross_view(x, i_w2c, Ks)
             v = raymap_images.shape[1]
+            # model.dynamic_grouping: Stage 1 sees a sampled view-group size while it is being
+            # trained (end-to-end); frozen or at inference it keeps model.group_size.
+            with expert.grouping(v, enabled=self.e2e and self.training):
+                x, s1 = expert._stage1_tokenize_and_encode(raymap_images)
+                x, s2 = expert._stage2_cross_view_and_downsample(x, i_w2c, Ks, h, w)
+                s3 = expert._stage3_global_cross_view(x, i_w2c, Ks)
             tokens = expert.fuse_tokens(s1, s2, s3, v, h, w).float()
             raw = expert.raw_from_tokens(tokens, v, h, w)
             g0 = expert.gaussians_from_raw(

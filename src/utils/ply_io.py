@@ -93,8 +93,9 @@ def gaussians_from_ply(path, device="cpu") -> GaussianField:
     )
 
 
-def save_scene_cameras(path, cameras, input_index, target_index, image_size: int) -> None:
-    """The normalized cameras a saved scene's Gaussians live in, context and target."""
+def save_scene_cameras(path, cameras, input_index, target_index, image_size: int, target_epa=None) -> None:
+    """The normalized cameras a saved scene's Gaussians live in, context and target; target_epa: optional EPA-aligned
+    target cameras (c2w, fxfycxcy), each with a batch dim, stored as "target_epa"."""
     def block(c2w, intr, index):
         return {
             "frame_index": [int(i) for i in np.asarray(index).reshape(-1)],
@@ -108,4 +109,6 @@ def save_scene_cameras(path, cameras, input_index, target_index, image_size: int
         "context": block(cameras.pred_i_c2w, cameras.pred_i_fxfycxcy, input_index),
         "target": block(cameras.pred_t_c2w, cameras.pred_t_fxfycxcy, target_index),
     }
+    if target_epa is not None:
+        payload["target_epa"] = block(target_epa[0], target_epa[1], target_index)
     Path(path).write_text(json.dumps(payload))

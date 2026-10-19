@@ -11,6 +11,7 @@ model:
   stage2_nlayer: 4
   stage3_nlayer: 8
   group_size: 2
+  dynamic_grouping: false
   patch_size: 4
   gaussians_per_patch: 4
   in_channels: 12
