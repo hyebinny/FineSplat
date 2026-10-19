@@ -4,18 +4,35 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FineSplat</title>
+<script>  // theme before first paint: the viewer's last pick (top-right toggle), else light
+  try { document.documentElement.dataset.theme = localStorage.getItem("theme") || "light"; }
+  catch (e) { document.documentElement.dataset.theme = "light"; }
+</script>
 <style>
-  /* dark look matching the demo video: black ground, light gray text, burnt-orange and blue accents,
-     DejaVu Sans (the demo's typeface), shipped in assets/fonts */
+  /* light (default) and dark (matching the demo video: black ground, light gray text) themes, switched by
+     data-theme on <html>; burnt-orange and blue accents, DejaVu Sans (the demo's typeface), shipped in assets/fonts */
   @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans.ttf?v=3e926c44") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
   @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Bold.ttf?v=359d5be7") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
   @font-face { font-family: "DejaVu Sans"; src: url("assets/fonts/DejaVuSans-Oblique.ttf?v=fa6c30f2") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
   :root {
-    color-scheme: dark;
-    --bg: #000000; --fg: #e4e4e7; --muted: #9b9ba3; --line: #2a2c31;
-    --chip: #15161a; --accent: #ee6a33; --accent-fg: #0b0b0c; --blue: #3f7cf0;
-    --panel: #0c0e12; --rule: #5a5d66; --band: #16181d;
+    color-scheme: light;
+    --bg: #ffffff; --fg: #26272b; --muted: #62646c; --line: #dfe0e4; --strong: #000000;
+    --chip: #f2f3f5; --accent: #ee6a33; --accent-fg: #0b0b0c; --blue: #2f6be0; --gold: #d39a12;
+    --panel: #f6f7f9; --rule: #b4b7be; --band: #f0f1f4; --card-edge: var(--line);
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #000000; --fg: #e4e4e7; --muted: #9b9ba3; --line: #2a2c31; --strong: #ffffff;
+    --chip: #15161a; --accent: #ee6a33; --accent-fg: #0b0b0c; --blue: #3f7cf0; --gold: #f6c24a;
+    --panel: #0c0e12; --rule: #5a5d66; --band: #16181d; --card-edge: transparent;
+  }
+  /* theme toggle, top right */
+  .theme-btn { position: absolute; top: 14px; right: 16px; display: inline-flex; align-items: center; gap: 6px;
+               padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--chip);
+               color: var(--fg); font: inherit; font-size: 13px; cursor: pointer; }
+  .theme-btn:hover { border-color: var(--muted); }
+  .theme-btn svg { width: 14px; height: 14px; }
+  :root[data-theme="dark"] .only-light, :root:not([data-theme="dark"]) .only-dark { display: none !important; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 16px/1.65 "DejaVu Sans", Verdana, "Segoe UI", sans-serif; }
@@ -31,7 +48,7 @@
   .title-card { padding: 8px 0 4px; margin-bottom: 20px; }
   .logo { display: block; width: 100%; max-width: 600px; height: auto; margin: 0 auto 12px; }
   .title-card .subtitle { margin: 0; }
-  .subtitle { font-size: 22px; margin: 0 0 16px; color: #fff; }
+  .subtitle { font-size: 22px; margin: 0 0 16px; color: var(--strong); }
   .authors { font-size: 18px; margin: 0 0 10px; color: var(--muted); }
   .affil { color: var(--muted); margin: 0; font-size: 14px; }
   .affil.note { font-size: 14px; margin-top: 8px; }
@@ -61,8 +78,8 @@
   .prose-list li { margin-bottom: 6px; }
   .prose + .sub, .prose-list + .sub { margin-top: 14px; }
   figure { margin: 16px 0 0; }
-  figure img { display: block; width: 100%; height: auto; padding: 16px; border-radius: 14px; background: #fff; }  /* white card around paper figures */
-  figure.plot img { padding: 0; background: none; border-radius: 0; }
+  figure img { display: block; width: 100%; height: auto; padding: 16px; border-radius: 14px; background: #fff; box-shadow: 0 0 0 1px var(--card-edge); }  /* white card around paper figures */
+  figure.plot img { padding: 0; background: none; border-radius: 0; box-shadow: none; }
   /* dots running along the plot's two arrows (end points from assets/gs_vs_psnr.json, see scripts/make_plot.py) */
   figure.plot { position: relative; }
   .plot-dot { position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; opacity: 0;
@@ -158,13 +175,13 @@
   .num-table thead th { color: var(--muted); font-weight: 600; }
   .num-table .grp { border-left: 1px solid var(--line); }
   .num-table tr.ours td, .num-table tr.ours b { color: var(--accent); font-weight: 700; }  /* ours: whole row orange, bold */
-  .num-table tr.pruned td { color: #fff; }
+  .num-table tr.pruned td { color: var(--strong); }
   .num-table tr.in td { color: var(--muted); opacity: .7; }
   .num-table b { color: var(--fg); font-weight: 700; }
   .num-table tr.setting th { text-align: left; color: var(--fg); font-weight: 700; padding-top: 14px; }
   .num-note { font-size: 13px; color: var(--muted); text-align: center; margin-top: 10px; }
   /* inference time: under the DL3DV table, same style as the benchmark tables */
-  .num-head { color: #fff; }
+  .num-head { color: var(--strong); }
   .time-head { margin-top: 48px; }
   .time-wrap { margin-top: 16px; }
   .time-wrap tbody td:nth-child(2) { border-left: 1px solid var(--line); }  /* method | times, as in the header */
@@ -192,6 +209,11 @@
 </style>
 </head>
 <body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Switch light / dark theme">
+  <svg class="only-light" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+  <svg class="only-dark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="currentColor"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1.5v2.5M12 20v2.5M1.5 12H4M20 12h2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8"/></g></svg>
+  <span class="only-light">Dark</span><span class="only-dark">Light</span>
+</button>
 <main>
   <header class="hero">
     <div class="title-card">
@@ -213,7 +235,8 @@
 
   <div class="detail">
     <figure class="plot" id="plot">
-      <img src="assets/gs_vs_psnr.png?v=5ebb9ed0" alt="PSNR versus number of Gaussians on DL3DV with 24 input views: FineSplat reaches higher PSNR with fewer Gaussians than pixel-aligned methods">
+      <img class="only-light" src="assets/gs_vs_psnr_light.png?v=6900b032" alt="PSNR versus number of Gaussians on DL3DV with 24 input views: FineSplat reaches higher PSNR with fewer Gaussians than pixel-aligned methods">
+      <img class="only-dark" src="assets/gs_vs_psnr.png?v=5ebb9ed0" alt="PSNR versus number of Gaussians on DL3DV with 24 input views: FineSplat reaches higher PSNR with fewer Gaussians than pixel-aligned methods">
     </figure>
     <section class="teaser">
       <video id="teaser1" src="media/teaser_cd9c981e_row1.mp4" autoplay muted loop playsinline></video>
@@ -222,7 +245,7 @@
       <div class="teaser-labels"><div>2Xplat</div><div>ZipSplat</div></div>
     </section>
   </div>
-  <p class="num-note">Results on DL3DV (224&times;224 resolution, 24 context views, pose-free setting).</p>
+  <p class="num-note">Results on DL3DV at 224&times;224 resolution with 24 context views in the pose-free setting.</p>
 
   <hr>
 
@@ -384,8 +407,14 @@ function Compare(el, group = []) {
   requestAnimationFrame(follow);
 })();
 
+$("themeBtn").onclick = () => {
+  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("theme", t); } catch (e) {}
+};
+
 fetch("assets/gs_vs_psnr.json", { cache: "no-cache" }).then(r => r.json()).then(P => {
-  for (const [k, c] of [["gold", "#f6c24a"], ["orange", "#ee6a33"]]) {  // the plot's arrow colors
+  for (const [k, c] of [["gold", "var(--gold)"], ["orange", "var(--accent)"]]) {  // the plot's arrow colors
     const [[x0, y0], [x1, y1]] = P[k], dot = document.createElement("span");
     dot.className = "plot-dot";
     for (const [n, v] of Object.entries({ x0, y0, x1, y1 })) dot.style.setProperty("--" + n, v * 100 + "%");
