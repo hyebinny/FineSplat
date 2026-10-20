@@ -32,8 +32,8 @@ def load_finesplat(config, base, device):
     else:
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         # full_state keeps the model.* keys, so an end-to-end checkpoint's Stage 1 wins over inference.ckpt_path
-        state = checkpoint_state(ckpt, cconf.get("use_ema", False))
-        if not cconf.get("full_state", False):
+        state = checkpoint_state(ckpt, cconf.get("use_ema", True))
+        if not cconf.get("full_state", True):
             state = {k: v for k, v in state.items() if not k.startswith("model.")}
         missing, unexpected = model.load_state_dict(state, strict=False)
         trained = [k for k in missing if not k.startswith("model.")]

@@ -99,10 +99,9 @@ Useful `inference.*` options (in the yaml, or appended to the command as `infere
 
 | Option | Description |
 | ------ | ----------- |
-| `checkpoint` | `{ckpt_path, use_ema, full_state}` of the FineSplat checkpoint. `ckpt_path: null` evaluates Stage 1 alone. |
+| `checkpoint` | `ckpt_path`: the FineSplat checkpoint (`pretrained_weights/finesplat_224res.pt`), EMA weights by default (`use_ema: true`). `ckpt_path: null` evaluates Stage 1 alone. |
+| `pose_optimization` | Whether to run EPA in the pose-free setting; `false` renders at the estimated target poses. |
 | `epa_steps` | Number of EPA steps (default 200). |
-| `pose_optimization` | `false` renders at DA3's target poses without EPA. |
-| `scene_range` | `[lo, hi]` scores scenes `lo..hi-1` only, to split `eval_prune` across GPUs. |
 | `prune_keep_per_view` | Number of Gaussians `eval_prune` keeps per context view (top-k over all Gaussians). |
 
 ## Training
@@ -111,10 +110,10 @@ Stage 1 is trained with [2Xplat](https://github.com/HwasikJeong/2Xplat)'s own re
 
 ```bash
 # Stage 2 on the frozen Stage 1
-torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2.yaml
+torchrun --nproc_per_node <num_gpus> -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2.yaml
 
 # end-to-end fine-tuning
-torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/DL3DV/train/e2e.yaml
+torchrun --nproc_per_node <num_gpus> -m src.commands.train_finesplat --config src/configs/DL3DV/train/e2e.yaml
 ```
 
 ## Related Projects

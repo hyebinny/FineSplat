@@ -262,7 +262,7 @@ def _save_metrics(target: Tensor, prediction: Tensor, view_indices: np.ndarray, 
     # Deliberately unclamped. Rendered colours do leave [0, 1], and compute_psnr clamps
     # internally while SSIM and LPIPS do not, so the three are not scored on quite the same
     # image - worth about 0.00002 SSIM and 0.0001 LPIPS. 2Xplat's own _save_metrics
-    # (y5ryan's utils/metric_utils.py) does the same, and the baseline rows have to stay
+    # (2Xplat's utils/metric_utils.py) does the same, and the baseline rows have to stay
     # comparable with the numbers that repo reports.
     psnr_values = compute_psnr(target, prediction)
     lpips_values = compute_lpips(target, prediction)
