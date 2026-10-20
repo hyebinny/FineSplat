@@ -3,7 +3,7 @@
     torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2.yaml
     torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/DL3DV/train/e2e.yaml
 
-Writes <out_dir>/finesplat_last.pt, finesplat_best.pt, finesplat_step_<n>.pt and watchlist/.
+Writes <out_dir>/finesplat_last.pt and watchlist/ (plus finesplat_step_<n>.pt with train.keep_step_checkpoints).
 Config keys: stage2.arch, stage2.e2e; train.lr, train.stage2_lr, train.num_steps,
 train.warmup_steps, train.lr_schedule, train.resume, train.init_stage2_ckpt,
 train.loss_views, train.unposed_ratio, train.ema, train.photometric,
@@ -291,13 +291,11 @@ def main() -> None:
     clip = float("inf") if not clip else clip
     eval_every = config.train.get("ckpt_every", 2500)
     watchlists = build_watchlists(config, os.path.join(out_dir, "watchlist")) if is_main else None
-    best_psnr = -float("inf")
 
     epoch_now, batch_in_epoch = [0], [0]
 
     def run_watchlist(step: int) -> dict:
-        """Evaluate the watchlist, log it, and refresh finesplat_last/finesplat_best."""
-        nonlocal best_psnr
+        """Evaluate the watchlist, log it, and refresh finesplat_last.pt."""
         core.model.geometry_expert.camera_mode = posed_camera_mode
         wl_model = ema if ema is not None else core
         wl_model.model.geometry_expert.camera_mode = posed_camera_mode
@@ -310,21 +308,13 @@ def main() -> None:
         # e2e checkpoints carry the unfrozen Stage 1 (full state dict); frozen runs store Stage 2 only
         state = core.state_dict() if core.e2e else stage2_state_dict(core)
         ckpt = {"step": step, "epoch": epoch_now[0], "batch_in_epoch": batch_in_epoch[0],
-                "state": state, "optimizer": opt.state_dict(),
-                "best_psnr": best_psnr, "wandb_id": wandb_id,
+                "state": state, "optimizer": opt.state_dict(), "wandb_id": wandb_id,
                 "watchlist": wl, "stage2_conf": stage2_conf}
         if ema is not None:
             ckpt["ema"] = ema.state_dict()
         torch.save(ckpt, os.path.join(out_dir, "finesplat_last.pt"))
-        if config.train.get("keep_step_checkpoints", True):
+        if config.train.get("keep_step_checkpoints", False):
             torch.save(ckpt, os.path.join(out_dir, f"finesplat_step_{step:06d}.pt"))
-        # best is selected on the train split, summed over the logged view counts
-        train_psnr = sum(v for k, v in wl.items()
-                         if k.startswith("watchlist/train") and k.endswith("_psnr"))
-        if train_psnr > best_psnr:
-            best_psnr = train_psnr
-            torch.save(ckpt, os.path.join(out_dir, "finesplat_best.pt"))
-            print(f"  new best (watchlist train psnr sum {best_psnr:.4f})", flush=True)
         return wl
 
     # train.init_stage2_ckpt: warm-start Stage-2 weights only (step, optimizer and schedule
@@ -349,7 +339,6 @@ def main() -> None:
         start_step = prev_ckpt["step"]
         start_epoch = prev_ckpt.get("epoch", 0)
         skip_batches = prev_ckpt.get("batch_in_epoch", 0)
-        best_psnr = prev_ckpt.get("best_psnr", best_psnr)
         if is_main:
             note = "" if "optimizer" in prev_ckpt else "  (no optimizer state - moments restart)"
             print(f"resumed from {resume_path}: step {start_step}, epoch {start_epoch}, "

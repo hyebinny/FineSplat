@@ -21,7 +21,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTS = REPO_ROOT.parent / "FineSplat_exp_final"
+EXPERIMENTS = REPO_ROOT.parent / "analysis"
 EVAL_ROOT = EXPERIMENTS / "eval"
 TRAIN_ROOT = EXPERIMENTS / "train"
 

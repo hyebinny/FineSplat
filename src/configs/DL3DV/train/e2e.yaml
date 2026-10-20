@@ -65,7 +65,7 @@ train:
   lr_schedule: cosine
   lr_decay_ratio: 0.2
   resume: true
-  out_dir: ../FineSplat_e2e_ckpt/finesplat_224_e2e
+  out_dir: ../analysis/train/finesplat_224_e2e
   keep_step_checkpoints: false
   beta1: 0.9
   beta2: 0.95
