@@ -9,7 +9,7 @@ Yonsei University
 </div>
 
 <div align="center" style="margin-top: 2em; margin-bottom: 1.0em">
-  <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/FineSplat-ArXiv-red" alt="arXiv"></a> <a href="https://hyebinny.github.io/FineSplat/"><img src="https://img.shields.io/badge/FineSplat-Project_Page-blue" alt="Project Page"></a> <a href="https://huggingface.co/HyebinKim/FineSplat"><img src="https://img.shields.io/badge/FineSplat-Hugging_Face-yellow" alt="Hugging Face"></a>
+  <a href="https://arxiv.org/abs/2610.25011"><img src="https://img.shields.io/badge/FineSplat-ArXiv-red" alt="arXiv"></a> <a href="https://hyebinny.github.io/FineSplat/"><img src="https://img.shields.io/badge/FineSplat-Project_Page-blue" alt="Project Page"></a> <a href="https://huggingface.co/HyebinKim/FineSplat"><img src="https://img.shields.io/badge/FineSplat-Hugging_Face-yellow" alt="Hugging Face"></a>
 </div>
 
 <div align="center" style="margin-top: 5.0em; margin-bottom: 1.0em">
@@ -53,17 +53,26 @@ so that they sit under `path/to/FineSplat/pretrained_weights/`.
 
 ## Datasets
 
-Download DL3DV from the [official repository](https://huggingface.co/DL3DV); we use **DL3DV-ALL-480P** at 224x224. Each
-scene is a folder `<split>/<scene id>/` holding the images and an `opencv_cameras.json`.
+We provide the processed datasets on [🤗 Hugging Face](https://huggingface.co/datasets/HwasikJeong/FineSplat_Datasets). They are downloaded from each dataset's official source and converted to the format our code expects.
 
-The configs expect the data under `datasets/` in the repository root:
+| Dataset | Used for |
+| ------- | -------- |
+| DL3DV | train & test |
+| RealEstate10K | test |
+| ScanNet++v2 | test |
+| Mip-NeRF360 | test |
+
+Place them under `datasets/` in the repository root:
 
 ```
 datasets/
   dl3dv_480/<split>/<scene id>/      # DL3DV-ALL-480P, data.root (train / test)
+  re10k/<scene id>/                  # RealEstate10K
+  scannetpp/<scene id>/              # ScanNet++v2
+  mipnerf360/<scene id>/             # Mip-NeRF360
 ```
 
-The context / target view indices of the evaluation datasets are in `src/data/<dataset>/`.
+The context and target view indices used for evaluation are listed in `src/data/<dataset>/`.
 
 ## Evaluation
 
@@ -125,7 +134,7 @@ If you find our work useful, please cite:
 @article{kim2026finesplat,
           title={FineSplat: Fine Patches, Local Groups, Detailed Splats},
           author={Hyebin Kim and Hwasik Jeong and Joonhyuk Park and Gyeongjin Kang and Jungwoo Kim and Younghyun Kim and Eunbyung Park},
-          journal={arXiv preprint arXiv:XXXX.XXXXX},
+          journal={arXiv preprint arXiv:2610.25011},
           year={2026}
 }
 ```
