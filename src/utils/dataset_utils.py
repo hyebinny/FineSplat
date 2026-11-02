@@ -29,7 +29,7 @@ def _resize_to_cover(
 
     "lanczos" resamples the uint8 PIL image; "bilinear_antialias" resamples the float
     tensor with torch. The two are not interchangeable - they differ in kernel and in
-    whether the source is quantised - and the 2Xplat evaluation protocol names which one
+    whether the source is quantised - and the evaluation protocol names which one
     a number was produced under, so the choice has to be stated alongside any metric.
 
     Args:

@@ -105,3 +105,13 @@ src/configs/dygroup/
 src/commands/eval_passes.py
 src/commands/eval_tto.py
 src/model/tto.py
+
+# RE10K training dataset (unused; training is DL3DV only)
+src/datasets/re10k_dynamic_dataset.py
+
+# periodic test-scene evaluation during training (local only; enabled by a `watchlist:` config block)
+src/utils/watchlist.py
+
+# Stage 1 (base model) training / standalone inference; not shipped
+src/commands/train.py
+src/commands/inference.py

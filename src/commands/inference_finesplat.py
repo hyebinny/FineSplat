@@ -1,22 +1,65 @@
-"""Evaluate FineSplat (Stage 1 + Stage 2) with the same protocol and outputs as ``src.commands.inference``.
+"""Evaluate FineSplat (Stage 1 + Stage 2): per-scene renders and metrics, plus a summary over the test set.
     python -m src.commands.inference_finesplat --config src/configs/DL3DV/eval/6v/posed.yaml
 inference.checkpoint: {ckpt_path, use_ema, full_state}; an empty ckpt_path leaves the Stage-2
     head zero-initialised, i.e. the Stage-1-only control through the same decode path.
 """
 
+import importlib
 import os
 import warnings
 
 import torch
 from easydict import EasyDict as edict
+from omegaconf import DictConfig
+from torch.utils.data import DataLoader
 
-from src.commands.inference import AMP_DTYPE, build_dataloader, load_model
 from src.utils.checkpoints import checkpoint_state
 from src.utils.init_utils import init_config
 from src.utils.eval_paths import resolve_out_dir
+from src.utils.ply_io import gaussians_to_ply, save_scene_cameras
 from src.utils.metric_utils import export_results, summarize_evaluation
 
 warnings.filterwarnings('ignore', category=FutureWarning)
+
+AMP_DTYPE = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+    "tf32": torch.float32,
+}
+
+
+def build_dataloader(config: DictConfig) -> DataLoader:
+    """Instantiate the inference dataset and wrap it in a DataLoader."""
+    assert config.inference.batch_size_per_gpu == 1, \
+        "Currently only batch size of 1 is supported for streaming inference."
+
+    dataset_name = config.inference.get("dataset_name", "src.datasets.dataset.InferenceDataset")
+    module_name, class_name = dataset_name.rsplit(".", 1)
+    Dataset = importlib.import_module(module_name).__dict__[class_name]
+    dataset = Dataset(config)
+
+    return DataLoader(
+        dataset,
+        batch_size=config.inference.batch_size_per_gpu,
+        shuffle=False,
+        num_workers=config.inference.num_workers,
+        prefetch_factor=config.inference.prefetch_factor,
+        persistent_workers=True,
+        pin_memory=False,
+    )
+
+
+def load_model(config: DictConfig, device: torch.device) -> torch.nn.Module:
+    """Instantiate the model and load checkpoint weights."""
+    module_name, class_name = config.model.class_name.rsplit(".", 1)
+    ModelClass = importlib.import_module(module_name).__dict__[class_name]
+    model = ModelClass(config).to(device)
+    if config.inference.ckpt_path == "":
+        print("No checkpoint path provided; the pretrained model weights will be used for inference.")
+    else:
+        print(model.load_ckpt(config.inference.ckpt_path)) 
+    return model
 
 
 def load_finesplat(config, base, device):
@@ -98,11 +141,23 @@ def main() -> None:
             else:
                 renderings = out["render"]
 
+            # save_gaussians: one reference-layout .ply plus the normalized cameras per scene
+            if config.inference.get("save_gaussians", False):
+                scene_dir = os.path.join(out_dir, f"{idx + 1:06d}_{input_data['scene_name'][0]}")
+                os.makedirs(scene_dir, exist_ok=True)
+                n = gaussians_to_ply(os.path.join(scene_dir, "point_cloud.ply"), out["gaussians"])
+                save_scene_cameras(os.path.join(scene_dir, "cameras.json"), out["cameras"],
+                                   input_data["index"][0].cpu().numpy(),
+                                   target_data["index"][0].cpu().numpy(), config.data.resize_h)
+                print(f"  saved {n} Gaussians", flush=True)
+
             export_results(
                 edict(input=input_data, target=target_data, render=renderings.float()),
                 out_dir,
                 compute_metrics=config.inference.get("compute_metrics"),
                 visualize=idx < visualize_first_n,
+                metric_resolution=config.inference.get("metric_resolution"),
+                metric_downsample=config.inference.get("metric_downsample", "bilinear_aa"),
                 uid=idx + 1,
             )
         torch.cuda.empty_cache()

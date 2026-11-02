@@ -1,5 +1,5 @@
 model:
-  class_name: src.model.model.TwoExpertModel
+  class_name: src.model.stage1.Stage1Model
   dim1: 256
   dim2: 512
   dim3: 1024

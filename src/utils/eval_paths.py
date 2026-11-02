@@ -1,17 +1,15 @@
 """Where experiment output goes.
 
     <experiments>/eval/     scores and renders, laid out by protocol
-    <experiments>/train/    checkpoints and watchlists, one directory per run
+    <experiments>/train/    checkpoints, one directory per run
     <experiments>/wandb/    W&B local files
 
 Under ``eval`` every result is filed by its settings:
 
     <H>res/<resize_mode>/<dataset>/<N>v/<camera_mode>/<run>[/<ckpt_tag>]
 
-from ``data.resize_h``, ``data.resize_mode``, ``inference.dataset`` (or the data list
-name), ``data.num_input_frames``, ``inference.camera_mode`` (``_epa`` appended when
-``inference.pose_optimization`` is set), ``inference.run`` and ``inference.ckpt_tag``.
-``resize_mode`` sits high because the resize filter changes PSNR by more than Stage 2 does.
+By default, the PIL Lanczos filter is used for resizing.
+Note that ``resize_mode`` can affect PSNR significantly.
 """
 
 import re

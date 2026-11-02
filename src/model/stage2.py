@@ -1,11 +1,9 @@
 """Stage 2 of FineSplat: error-conditioned correction of the Stage-1 tokens.
 
-Stage 1 (2Xplat) predicts one token per 4x4 patch, decoded into 4 Gaussians. Each Stage-2
-step renders the current Gaussians into the context views, builds a per-view error map,
-lifts it onto the tokens by projection and visibility pooling, runs PTv3 serialized-attention
-blocks over the token cloud, and predicts a token residual the frozen Stage-1 head decodes.
-
-    python -m src.model.stage2   # self-check (needs a GPU)
+Stage 1 predicts one token per 4x4 patch, decoded into 4 Gaussians. Each Stage-2 step
+renders the current Gaussians into the context views, builds a per-view error map, lifts
+it onto the tokens by projection and visibility pooling, runs serialized-attention blocks
+over the token cloud, and predicts a token residual that the Stage-1 head decodes.
 """
 
 import contextlib
@@ -552,7 +550,7 @@ class Stage2(nn.Module):
 
 
 class FineSplat(nn.Module):
-    """FineSplat: Stage 1 (2Xplat) + Stage 2; ``forward`` returns the target-view render after every step."""
+    """FineSplat: Stage 1 + Stage 2; ``forward`` returns the target-view render after every step."""
 
     def __init__(self, model, conf: dict):
         super().__init__()
@@ -568,15 +566,15 @@ class FineSplat(nn.Module):
         assert self.mode in ("token", "gaussian"), self.mode
         assert model.width == model.height, "square images assumed (side, home-patch lookup)"
         self.image_size = model.width
-        expert = model.appearance_expert
-        self.G = expert.gaussian_side ** 2
+        appearance = model.appearance_backbone
+        self.G = appearance.gaussian_side ** 2
 
         if self.mode == "token":
-            self.patch = expert.patch_size
+            self.patch = appearance.patch_size
         else:
             # one point per Gaussian; the (v hh ph ww pw) unfold makes a view's Gaussians a
             # plain grid of sub-cells, so the same home-patch lookup works with the sub-cell stride
-            self.patch = expert.gaussian_stride
+            self.patch = appearance.gaussian_stride
         self.side = self.image_size // self.patch
 
         self.num_steps = conf.get("num_steps", 4)
@@ -632,8 +630,8 @@ class FineSplat(nn.Module):
     def _to_gaussians(self, x: torch.Tensor, v: int) -> torch.Tensor:
         """Broadcast a per-token tensor (B, K, C) onto its Gaussians in the (v hh ph ww pw) unfold
         order: a token's Gaussians are not adjacent, so a plain repeat would be wrong."""
-        side = self.image_size // self.model.appearance_expert.patch_size
-        g = self.model.appearance_expert.gaussian_side
+        side = self.image_size // self.model.appearance_backbone.patch_size
+        g = self.model.appearance_backbone.gaussian_side
         x = rearrange(x, "b (v hh ww) c -> b v hh ww c", v=v, hh=side, ww=side)
         return rearrange(x.unsqueeze(3).unsqueeze(5).expand(-1, -1, -1, g, -1, g, -1),
                          "b v hh ph ww pw c -> b (v hh ph ww pw) c")
@@ -641,15 +639,15 @@ class FineSplat(nn.Module):
     def _gs_to_token(self, x: torch.Tensor, v: int) -> torch.Tensor:
         """Inverse grouping of ``_to_gaussians``: per-Gaussian (B, N, C) -> per-token
         (B, K, G*C), the G features concatenated in their fixed (ph, pw) slot order."""
-        side = self.image_size // self.model.appearance_expert.patch_size
-        g = self.model.appearance_expert.gaussian_side
+        side = self.image_size // self.model.appearance_backbone.patch_size
+        g = self.model.appearance_backbone.gaussian_side
         return rearrange(x, "b (v hh ph ww pw) c -> b (v hh ww) (ph pw c)",
                          v=v, hh=side, ww=side, ph=g, pw=g)
 
     @staticmethod
     def raw_dim(model) -> int:
         """Width of one Gaussian's raw parameter vector: depth + offset + SH + scale + quat + opacity."""
-        e = model.appearance_expert
+        e = model.appearance_backbone
         return 1 + 2 + e.color_dim + 3 + 4 + e.opacity_dim
 
     def train(self, mode: bool = True):
@@ -701,26 +699,26 @@ class FineSplat(nn.Module):
         return rgb, depth
 
     def forward(self, input_data: dict, target_data: dict) -> dict:
-        model, expert = self.model, self.model.appearance_expert
+        model, appearance = self.model, self.model.appearance_backbone
         h = w = self.image_size
 
         base_ctx = (contextlib.nullcontext() if (self.e2e and self.training)
                     else torch.no_grad())
         with base_ctx:
-            cameras = model.geometry_expert.predict_cameras(input_data, target_data)
+            cameras = model.geometry_backbone.predict_cameras(input_data, target_data)
             raymap_images, Ks, i_w2c = model._build_raymap_input(
                 input_data, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
             )
             v = raymap_images.shape[1]
             # model.dynamic_grouping: Stage 1 sees a sampled view-group size while it is being
             # trained (end-to-end); frozen or at inference it keeps model.group_size.
-            with expert.grouping(v, enabled=self.e2e and self.training):
-                x, s1 = expert._stage1_tokenize_and_encode(raymap_images)
-                x, s2 = expert._stage2_cross_view_and_downsample(x, i_w2c, Ks, h, w)
-                s3 = expert._stage3_global_cross_view(x, i_w2c, Ks)
-            tokens = expert.fuse_tokens(s1, s2, s3, v, h, w).float()
-            raw = expert.raw_from_tokens(tokens, v, h, w)
-            g0 = expert.gaussians_from_raw(
+            with appearance.grouping(v, enabled=self.e2e and self.training):
+                x, s1 = appearance._stage1_tokenize_and_encode(raymap_images)
+                x, s2 = appearance._stage2_cross_view_and_downsample(x, i_w2c, Ks, h, w)
+                s3 = appearance._stage3_global_cross_view(x, i_w2c, Ks)
+            tokens = appearance.fuse_tokens(s1, s2, s3, v, h, w).float()
+            raw = appearance.raw_from_tokens(tokens, v, h, w)
+            g0 = appearance.gaussians_from_raw(
                 raw, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w, cameras.pred_t_c2w, h, w,
             )
         render0 = None
@@ -737,7 +735,7 @@ class FineSplat(nn.Module):
         gt_feat = self.error.features(gt_ctx)
         mvp_feat = None
         if self.error.image_embed == "mvp_s1":
-            gh = self.image_size // expert.patch_size
+            gh = self.image_size // appearance.patch_size
             mvp_feat = rearrange(s1.detach(), "n (hh ww) d -> n d hh ww", hh=gh, ww=gh)
         img_map = self.error.image_map(gt_ctx, mvp_feat)
 
@@ -796,7 +794,7 @@ class FineSplat(nn.Module):
             # Decode under the ambient autocast (as inference does) so a zero residual
             # reproduces Stage 1 bit for bit.
             if self.mode == "token":
-                g = expert.decode_from_tokens(
+                g = appearance.decode_from_tokens(
                     points, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
                     cameras.pred_t_c2w, h, w,
                 )
@@ -804,8 +802,8 @@ class FineSplat(nn.Module):
                 # residual on the pre-activation parameters: only the activations are re-run,
                 # so every bound they impose still holds; delta-z re-decodes raw from the tokens
                 if self.gaussian_delta_z:
-                    points = expert.raw_from_tokens(tokens, v, h, w).float()
-                g = expert.gaussians_from_raw(
+                    points = appearance.raw_from_tokens(tokens, v, h, w).float()
+                g = appearance.gaussians_from_raw(
                     points, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
                     cameras.pred_t_c2w, h, w,
                 )
@@ -841,8 +839,8 @@ class FineSplat(nn.Module):
     def _token_coord(self, xyz: torch.Tensor, v: int) -> torch.Tensor:
         """Mean position of each token's Gaussians, (B, N, 3) -> (B, K, 3), honouring the
         (v hh ph ww pw) unfold order (a plain (K, G) reshape would mix neighbouring tokens)."""
-        side = self.image_size // self.model.appearance_expert.patch_size
-        g = self.model.appearance_expert.gaussian_side
+        side = self.image_size // self.model.appearance_backbone.patch_size
+        g = self.model.appearance_backbone.gaussian_side
         xyz = rearrange(xyz, "b (v hh ph ww pw) c -> b (v hh ww) (ph pw) c",
                         v=v, hh=side, ww=side, ph=g, pw=g)
         return xyz.mean(dim=2)

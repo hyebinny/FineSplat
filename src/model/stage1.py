@@ -1,6 +1,6 @@
-"""Stage 1 of FineSplat: the 2Xplat feed-forward 3DGS model.
+"""Stage 1 of FineSplat: the feed-forward 3DGS model.
 
-A DA3 geometry expert predicts cameras; an MVP appearance expert maps ray-encoded
+A pretrained geometry model predicts cameras; a pretrained appearance model maps ray-encoded
 images to a 3D Gaussian field. Each patch is a ``gaussian_side x gaussian_side``
 sub-grid of Gaussians; each Gaussian owns a ``gaussian_stride x gaussian_stride``
 pixel cell and predicts a bounded image-space offset inside it."""
@@ -100,7 +100,7 @@ class CameraBundle:
     gt_t_c2w:        torch.Tensor  # (B, T, 4, 4)
 
 
-class GeometryExpert:
+class GeometryBackbone:
     """Predicts poses and intrinsics for all views with DA3, normalized to the scene scale."""
 
     def __init__(
@@ -318,10 +318,10 @@ class GeometryExpert:
         )
 
 
-class AppearanceExpert:
+class AppearanceBackbone:
     """MVP three-stage transformer mapping ray-encoded images to a 3D Gaussian field.
 
-    Holds non-owning references to modules registered on ``TwoExpertModel``. ``gaussian_side``
+    Holds non-owning references to modules registered on ``Stage1Model``. ``gaussian_side``
     is the per-patch sub-grid side; ``gaussian_stride`` the pixels per side of each cell."""
 
     def __init__(
@@ -383,7 +383,7 @@ class AppearanceExpert:
         self.max_dist = max_dist
         # Training only: sample the stage-2 view-group size per forward (see grouping()).
         self.dynamic_grouping = dynamic_grouping
-        self.training = True  # mirrors the owning TwoExpertModel (set in its train())
+        self.training = True  # mirrors the owning Stage1Model (set in its train())
         self.inference_mode = inference_mode
 
     def sample_group_size(self, v: int) -> int:
@@ -628,7 +628,7 @@ class AppearanceExpert:
                 i_fxfycxcy, i_c2w, h, w, image_offset,
             )
             scale = (scale + self.scale_bias).clamp(max=self.scale_max)
-            # Bias only the DC (sh0) opacity. Out-of-place: `opacity` is a torch.split
+            # Bias the (view-independent) opacity coefficient. Out-of-place: `opacity` is a torch.split
             # view, and in-place writes into it fail once tokens require grad (TTO).
             dc_bias = torch.zeros_like(opacity)
             dc_bias[..., 0] = self.opacity_bias
@@ -685,8 +685,8 @@ class AppearanceExpert:
         return rearrange(x, "b (v l) d -> (b v) l d", v=v)
 
 
-class TwoExpertModel(nn.Module):
-    """Stage 1 model: wires the GeometryExpert and AppearanceExpert together."""
+class Stage1Model(nn.Module):
+    """Stage 1 model: wires the GeometryBackbone and AppearanceBackbone together."""
 
     def __init__(self, config: Any) -> None:
         """A ``config.inference`` section selects inference mode; its absence means training."""
@@ -754,13 +754,13 @@ class TwoExpertModel(nn.Module):
         self._build_geometry_modules()
         self._build_appearance_modules()
 
-        self.geometry_expert = GeometryExpert(
+        self.geometry_backbone = GeometryBackbone(
             pose_regressor=self.pose_regressor,
             scene_scale=self.scene_scale,
             inference_mode=self.inference_mode,
             camera_mode=self.camera_mode,
         )
-        self.appearance_expert = AppearanceExpert(
+        self.appearance_backbone = AppearanceBackbone(
             image_tokenizer=self.image_tokenizer,
             stage1=self.stage1,
             stage2=self.stage2,
@@ -796,7 +796,7 @@ class TwoExpertModel(nn.Module):
             self.loss_computer = LossComputer(config)
 
     def _build_appearance_modules(self):
-        """Build the appearance-expert modules (names must match checkpoint keys)."""
+        """Build the appearance-backbone modules (names must match checkpoint keys)."""
         # Marks a state dict as using the depth + image_offset layout.
         self.register_buffer("_image_offset_version", torch.tensor(1))
 
@@ -890,7 +890,7 @@ class TwoExpertModel(nn.Module):
     def train(self, mode: bool = True):
         """Keeps the loss modules permanently in eval mode."""
         super().train(mode)
-        self.appearance_expert.training = mode
+        self.appearance_backbone.training = mode
         if not self.inference_mode:
             self.loss_computer.eval()
 
@@ -1024,11 +1024,11 @@ class TwoExpertModel(nn.Module):
 
     def forward(self, input_data_dict: dict, target_data_dict: dict) -> edict:
         """Predict cameras -> build ray maps -> predict Gaussians -> render (mode-dependent edict)."""
-        cameras = self.geometry_expert.predict_cameras(input_data_dict, target_data_dict)
+        cameras = self.geometry_backbone.predict_cameras(input_data_dict, target_data_dict)
         raymap_images, Ks, i_w2c = self._build_raymap_input(
             input_data_dict, cameras.pred_i_fxfycxcy, cameras.pred_i_c2w,
         )
-        gaussians = self.appearance_expert.predict_gaussians(
+        gaussians = self.appearance_backbone.predict_gaussians(
             raymap_images, i_w2c, Ks,
             cameras.pred_i_fxfycxcy, cameras.pred_i_c2w, cameras.pred_t_c2w,
         )
@@ -1180,5 +1180,5 @@ class TwoExpertModel(nn.Module):
             print(f"Failed to load {ckpt_path}")
             return None
         result = self.load_state_dict(checkpoint["ema"], strict=False)
-        print(f"Loaded 2Xplat checkpoint in {ckpt_path}")
+        print(f"Loaded Stage 1 checkpoint from {ckpt_path}")
         return 0

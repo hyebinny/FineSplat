@@ -1,5 +1,5 @@
 model:
-  class_name: src.model.model.TwoExpertModel
+  class_name: src.model.stage1.Stage1Model
   dim1: 256
   dim2: 512
   dim3: 1024
@@ -65,7 +65,6 @@ train:
   lr_schedule: cosine
   lr_decay_ratio: 0.2
   resume: true
-  out_dir: ../analysis/train/finesplat_224_e2e
   keep_step_checkpoints: false
   beta1: 0.9
   beta2: 0.95
@@ -79,20 +78,12 @@ train:
   log_every: 100
   image_every: 250
   ckpt_every: 1000
-  save_watchlist_renders: false
   run: finesplat_224_e2e
   wandb:
     project: FineSplat
     name: finesplat_224_e2e
     api_key_path: src/configs/api_keys.yaml
   init_stage2_ckpt: pretrained_weights/train/stage2_224res.pt
-watchlist:
-  test_json_paths:
-    '6': src/data/DL3DV/eval_ctx6_tgt8.json
-    '12': src/data/DL3DV/eval_ctx12_tgt8.json
-    '24': src/data/DL3DV/eval_ctx24_tgt8.json
-  test_scene_list: src/data/DL3DV/test_scenes.txt
-  test_split: test
 stage2:
   e2e: true
   num_steps: 4

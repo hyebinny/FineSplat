@@ -1,5 +1,5 @@
 model:
-  class_name: src.model.model.TwoExpertModel
+  class_name: src.model.stage1.Stage1Model
   dim1: 256
   dim2: 512
   dim3: 1024
@@ -75,19 +75,11 @@ train:
   log_every: 100
   image_every: 250
   ckpt_every: 1000
-  save_watchlist_renders: false
   run: finesplat_224_stage2
   wandb:
     project: FineSplat
     name: finesplat_224_stage2
     api_key_path: src/configs/api_keys.yaml
-watchlist:
-  test_json_paths:
-    '6': src/data/DL3DV/eval_ctx6_tgt8.json
-    '12': src/data/DL3DV/eval_ctx12_tgt8.json
-    '24': src/data/DL3DV/eval_ctx24_tgt8.json
-  test_scene_list: src/data/DL3DV/test_scenes.txt
-  test_split: test
 stage2:
   num_steps: 4
   network:

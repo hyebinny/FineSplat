@@ -25,7 +25,7 @@ def compute_psnr(
     ground_truth: Tensor,
     predicted: Tensor,
 ) -> Tensor:
-    """Compute Peak Signal-to-Noise Ratio between ground truth and predicted images.
+    """Compute Peak Signal-to-Noise Ratio (PSNR) between ground truth and predicted images.
 
     Args:
         ground_truth (Tensor): Images with shape [batch, channel, height, width],
@@ -63,7 +63,7 @@ def compute_lpips(
     predicted: Tensor,
     normalize: bool = True,
 ) -> Tensor:
-    """Compute Learned Perceptual Image Patch Similarity between images.
+    """Compute Learned Perceptual Image Patch Similarity (LPIPS) between images.
 
     Args:
         ground_truth (Tensor): Images with shape [batch, channel, height, width].
@@ -92,7 +92,7 @@ def compute_ssim(
     ground_truth: Tensor,
     predicted: Tensor,
 ) -> Tensor:
-    """Compute Structural Similarity Index between images.
+    """Compute Structural Similarity Index (SSIM) between images.
 
     Args:
         ground_truth (Tensor): Images with shape [batch, channel, height, width],
@@ -123,10 +123,9 @@ def compute_ssim(
 
 
 
-# Metric-time resizing. 2Xplat's evaluation protocol names a resolution and a filter for
-# the metric stage, separately from the resolution the images were loaded at; a number is
-# only comparable against another taken under the same pair. Ported from 2Xplat so the two
-# repositories report the same figure for the same checkpoint.
+# Metric-time resizing. The evaluation protocol names a resolution and a filter for the
+# metric stage, separately from the resolution the images were loaded at; a number is only
+# comparable against another taken under the same pair.
 DOWNSAMPLE_MODES = {
     "bilinear_aa": dict(mode="bilinear", align_corners=False, antialias=True),
     "bilinear": dict(mode="bilinear", align_corners=False),
@@ -167,11 +166,7 @@ def _resize(images: Tensor, resolution: int, downsample: str) -> Tensor:
 
 def resize_for_metrics(images: Tensor, resolution: int | None,
                        downsample: str = "bilinear_aa") -> Tensor:
-    """Resize [views, 3, H, W] for the metric stage, or return it untouched.
-
-    No-op when ``resolution`` is None or the images are already square at it, which is how
-    2Xplat's own configs leave it for same-resolution evaluation.
-    """
+    """Resize [views, 3, H, W] for the metric stage, or return it untouched."""
     if resolution is None or images.shape[-2:] == (resolution, resolution):
         return images
     return _resize(images.to(torch.float32), resolution, downsample)
@@ -261,9 +256,8 @@ def _save_metrics(target: Tensor, prediction: Tensor, view_indices: np.ndarray, 
 
     # Deliberately unclamped. Rendered colours do leave [0, 1], and compute_psnr clamps
     # internally while SSIM and LPIPS do not, so the three are not scored on quite the same
-    # image - worth about 0.00002 SSIM and 0.0001 LPIPS. 2Xplat's own _save_metrics
-    # (2Xplat's utils/metric_utils.py) does the same, and the baseline rows have to stay
-    # comparable with the numbers that repo reports.
+    # image - worth about 0.00002 SSIM and 0.0001 LPIPS. The baseline numbers were scored
+    # the same way and have to stay comparable.
     psnr_values = compute_psnr(target, prediction)
     lpips_values = compute_lpips(target, prediction)
     ssim_values = compute_ssim(target, prediction)

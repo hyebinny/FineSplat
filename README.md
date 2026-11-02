@@ -16,6 +16,15 @@ Yonsei University
   <img src="./assets/teaser.png" alt="FineSplat" />
 </div>
 
+## Highlights
+
+🧩 **Fine-grained patches**: 4×4-pixel patches for detail-preserving reconstruction  
+🪶 **Fewer Gaussians**: 4× fewer than pixel-aligned Gaussians  
+💎 **Lightweight representation**: SH degree 1 for color, view-independent opacity  
+✨ **High rendering quality**  
+⚡ **Fast inference**  
+📷 **RGB-only supervision**: no depth supervision
+
 ## Installation
 
 ```bash
@@ -42,11 +51,13 @@ All checkpoints are on [🤗 Hugging Face](https://huggingface.co/HyebinKim/Fine
 | File | Content | Used by |
 | ---- | ------- | ------- |
 | `finesplat_224res.pt` | FineSplat-224: Stage 1 + Stage 2, fine-tuned end-to-end | evaluation |
-| `train/stage1_224res.pt` | Stage 1 (2Xplat) | training, Stage 2 |
+| `train/stage1_224res.pt` | Stage 1 | training, Stage 2 |
 | `train/stage2_224res.pt` | Stage 2 trained on the frozen Stage 1 | training, end-to-end |
 
 ```bash
 hf download HyebinKim/FineSplat finesplat_224res.pt --local-dir pretrained_weights
+# Stage 1 / Stage 2 checkpoints, for training or Stage-1-only evaluation
+hf download HyebinKim/FineSplat --include 'train/*' --local-dir pretrained_weights
 ```
 
 so that they sit under `path/to/FineSplat/pretrained_weights/`.
@@ -85,7 +96,7 @@ The context and target view indices used for evaluation are listed in `src/data/
 | `unposed` | Estimated poses and intrinsics | Estimated, then EPA |
 
 EPA (evaluation-time pose alignment) optimizes the target poses for 200 Adam steps against the
-rendering before scoring, as in 2Xplat and YoNoSplat.
+rendering before scoring, following prior pose-free methods.
 
 ```bash
 # FineSplat, all Gaussians
@@ -99,31 +110,45 @@ Useful `inference.*` options (in the yaml, or appended to the command as `infere
 
 | Option | Description |
 | ------ | ----------- |
-| `checkpoint` | `ckpt_path`: the FineSplat checkpoint (`pretrained_weights/finesplat_224res.pt`), EMA weights by default (`use_ema: true`). `ckpt_path: null` evaluates Stage 1 alone. |
+| `checkpoint` | `ckpt_path`: the FineSplat checkpoint (`pretrained_weights/finesplat_224res.pt`), EMA weights by default (`use_ema: true`). |
+| `ckpt_path` | Stage 1 checkpoint. Not needed with the FineSplat checkpoint above, which already contains Stage 1. To evaluate Stage 1 alone: `inference.checkpoint.ckpt_path=null inference.ckpt_path=pretrained_weights/train/stage1_224res.pt`. |
 | `pose_optimization` | Whether to run EPA in the pose-free setting; `false` renders at the estimated target poses. |
 | `epa_steps` | Number of EPA steps (default 200). |
 | `prune_keep_per_view` | Number of Gaussians `eval_prune` keeps per context view (top-k over all Gaussians). |
 
 ## Training
 
-Stage 1 is trained with [2Xplat](https://github.com/HwasikJeong/2Xplat)'s own recipe. Stage 2 is first trained on the frozen Stage 1 with GT cameras, and the whole model is then fine-tuned end-to-end in the pose-free setting.
+**Stage 1.** The appearance backbone follows the [MVP](https://github.com/Gynjn/MVP) architecture, with view-independent opacity instead of MVP's view-dependent opacity, and is trained in two steps: the original pixel-aligned MVP from scratch (color SH degree 0), then fine-tuned with the 4×4-patch head (color SH degree 1).  The pretrained head is converted to the patch layout when loaded (`Stage1Model._expand_gaussian_head`). The geometry backbone and the appearance backbone are then jointly trained in the pose-free setting following [2Xplat](https://github.com/HwasikJeong/2Xplat). The configs are in `src/configs/DL3DV/train/stage1/`:
+
+```bash
+# appearance backbone, from the MVP repository
+torchrun --nproc_per_node <num_gpus> train.py --config path/to/FineSplat/src/configs/DL3DV/train/stage1/app_backbone_pretrain.yaml
+torchrun --nproc_per_node <num_gpus> train.py --config path/to/FineSplat/src/configs/DL3DV/train/stage1/app_backbone_finetune.yaml
+
+# Stage 1 (geometry + appearance backbone), from the 2Xplat repository
+torchrun --nproc_per_node <num_gpus> -m src.commands.train --config path/to/FineSplat/src/configs/DL3DV/train/stage1/stage1.yaml
+```
+
+The trained Stage 1 is released as `train/stage1_224res.pt`.
+
+**Stage 2.** Stage 2 is first trained on the frozen Stage 1 with GT cameras, and the whole model is then fine-tuned end-to-end in the pose-free setting, which gives the final FineSplat checkpoint.
 
 ```bash
 # Stage 2 on the frozen Stage 1
-torchrun --nproc_per_node <num_gpus> -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2.yaml
+torchrun --nproc_per_node <num_gpus> -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2/stage2.yaml
 
 # end-to-end fine-tuning
-torchrun --nproc_per_node <num_gpus> -m src.commands.train_finesplat --config src/configs/DL3DV/train/e2e.yaml
+torchrun --nproc_per_node <num_gpus> -m src.commands.train_finesplat --config src/configs/DL3DV/train/finesplat/end_to_end.yaml
 ```
 
 ## Related Projects
 
 This project builds on many excellent research works. We thank the authors for sharing their code.
 
-- [2Xplat](https://github.com/HwasikJeong/2Xplat)
-- [MVP](https://github.com/Gynjn/MVP)
-- [Point Transformer V3](https://github.com/Pointcept/PointTransformerV3)
 - [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)
+- [MVP](https://github.com/Gynjn/MVP)
+- [2Xplat](https://github.com/HwasikJeong/2Xplat)
+- [Point Transformer V3](https://github.com/Pointcept/PointTransformerV3)
 
 ## Citation
 

@@ -16,7 +16,7 @@ class GaussianField:
     feature:            torch.Tensor         # (B, N, D, 3) — SH color coefficients
     scale:              torch.Tensor         # (B, N, 3)
     rotation:           torch.Tensor         # (B, N, 4)
-    opacity:            torch.Tensor         # (B, N, D, 1) — SH opacity coefficients
+    opacity:            torch.Tensor         # (B, N, D, 1) — opacity coefficients; D = 1 (view-independent)
     opacity_precompute: torch.Tensor | None  # (B, T, N, D, 1) — None during inference
 
 
@@ -55,7 +55,7 @@ class GaussianRenderer(torch.autograd.Function):
             feature: SH color coefficients of shape (N, D, 3).
             scale: Log-space Gaussian scales of shape (N, 3); exponentiated internally.
             rotation: Unit quaternions of shape (N, 4).
-            opacity: Pre-sigmoid SH opacity coefficients of shape (N, D, 1);
+            opacity: Pre-sigmoid opacity coefficients of shape (N, D, 1), D = 1 (view-independent);
                 sigmoid-activated and squeezed internally.
             test_c2w: Camera-to-world transform of shape (4, 4).
             test_intr: Camera intrinsics as (fx, fy, cx, cy) of shape (4,).
@@ -118,7 +118,7 @@ class GaussianRenderer(torch.autograd.Function):
             feature: SH color coefficients of shape (B, N, D, 3).
             scale: Log-space scales of shape (B, N, 3).
             rotation: Unit quaternions of shape (B, N, 4).
-            opacity: Pre-sigmoid SH opacity of shape (B, V, N, D, 1).
+            opacity: Pre-sigmoid opacity coefficients of shape (B, V, N, D, 1), D = 1 (view-independent).
             test_c2ws: Camera-to-world transforms of shape (B, V, 4, 4).
             test_intr: Camera intrinsics (fx, fy, cx, cy) of shape (B, V, 4).
             W: Output image width in pixels.

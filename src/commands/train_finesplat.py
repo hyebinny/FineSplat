@@ -1,9 +1,9 @@
 """Train FineSplat: Stage 2 on a frozen Stage 1 (default), or end-to-end with ``stage2.e2e: true``.
 
-    torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2.yaml
-    torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/DL3DV/train/e2e.yaml
+    torchrun --nproc_per_node 4 -m src.commands.train_finesplat --config src/configs/DL3DV/train/stage2/stage2.yaml
+    torchrun --nproc_per_node 8 -m src.commands.train_finesplat --config src/configs/DL3DV/train/finesplat/end_to_end.yaml
 
-Writes <out_dir>/finesplat_last.pt and watchlist/ (plus finesplat_step_<n>.pt with train.keep_step_checkpoints).
+Writes <out_dir>/finesplat_last.pt (plus finesplat_step_<n>.pt with train.keep_step_checkpoints).
 Config keys: stage2.arch, stage2.e2e; train.lr, train.stage2_lr, train.num_steps,
 train.warmup_steps, train.lr_schedule, train.resume, train.init_stage2_ckpt,
 train.loss_views, train.unposed_ratio, train.ema, train.photometric,
@@ -21,20 +21,48 @@ from omegaconf import OmegaConf
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
-from src.commands.inference import AMP_DTYPE, load_model
+from src.commands.inference_finesplat import AMP_DTYPE, load_model
 from src.utils.checkpoints import checkpoint_state
-from src.commands.train import build_input_target_dicts, set_epoch
 from src.datasets import get_train_data_loader
 from src.model.loss import PerceptualLoss
 from src.model.stage2 import FineSplat, default_conf
-from src.utils import watchlist
 from src.utils.eval_paths import train_out_dir, wandb_dir
 from src.utils.init_utils import init_config
 from src.utils.metric_utils import compute_lpips, compute_psnr, compute_ssim, get_lpips_model
 from copy import deepcopy
 
 from src.utils.training_utils import create_optimizer, update_ema
-from src.utils.watchlist import build_watchlists
+
+
+def build_input_target_dicts(
+    batch: dict[str, torch.Tensor],
+    device: torch.device,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    """Move batch tensors to device and split into input-view and target-view dicts."""
+    tensors = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+    input_dict = {
+        "image": tensors["input_image"],
+        "fxfycxcy": tensors["input_fxfycxcy"],
+        "c2w": tensors["input_c2w"],
+        "image_indices": tensors["input_indices"],
+    }
+    target_dict = {
+        "image": tensors["target_image"],
+        "fxfycxcy": tensors["target_fxfycxcy"],
+        "c2w": tensors["target_c2w"],
+        "image_indices": tensors["target_indices"],
+    }
+    return input_dict, target_dict
+
+
+def set_epoch(data_loader: torch.utils.data.DataLoader, epoch: int) -> None:
+    """Propagate epoch to sampler, batch_sampler, and dataset for reproducible shuffling."""
+    if hasattr(data_loader, "dataset") and hasattr(data_loader.dataset, "set_epoch"):
+        data_loader.dataset.set_epoch(epoch)
+    if hasattr(data_loader, "sampler") and hasattr(data_loader.sampler, "set_epoch"):
+        data_loader.sampler.set_epoch(epoch)
+    if hasattr(data_loader, "batch_sampler") and hasattr(data_loader.batch_sampler, "set_epoch"):
+        data_loader.batch_sampler.set_epoch(epoch)
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -277,7 +305,7 @@ def main() -> None:
     core.context_loss_views = ctx_views
     # train.unposed_ratio: probability (per rank, per step) of using DA3's predicted cameras
     unposed_ratio = float(config.train.get("unposed_ratio", 0.0))
-    posed_camera_mode = core.model.geometry_expert.camera_mode
+    posed_camera_mode = core.model.geometry_backbone.camera_mode
     perceptual_fn = None
     if perceptual_weight > 0:
         perceptual_fn = PerceptualLoss(device=str(device)).to(device).eval()
@@ -290,21 +318,28 @@ def main() -> None:
     clip = config.train.get("grad_clip", 0.5)
     clip = float("inf") if not clip else clip
     eval_every = config.train.get("ckpt_every", 2500)
-    watchlists = build_watchlists(config, os.path.join(out_dir, "watchlist")) if is_main else None
+    # watchlist: optional periodic evaluation on fixed test scenes; off unless the config has a
+    # `watchlist:` block (src/utils/watchlist.py is not shipped).
+    watchlists = None
+    if is_main and config.get("watchlist"):
+        from src.utils.watchlist import build_watchlists, evaluate as evaluate_watchlist
+        watchlists = build_watchlists(config, os.path.join(out_dir, "watchlist"))
 
     epoch_now, batch_in_epoch = [0], [0]
 
     def run_watchlist(step: int) -> dict:
-        """Evaluate the watchlist, log it, and refresh finesplat_last.pt."""
-        core.model.geometry_expert.camera_mode = posed_camera_mode
-        wl_model = ema if ema is not None else core
-        wl_model.model.geometry_expert.camera_mode = posed_camera_mode
-        wl = watchlist.evaluate(wl_model, watchlists, device, amp, out_dir, step,
-                                save_renders=config.train.get("save_watchlist_renders", True))
-        print("  watchlist " + "  ".join(f"{k.split('/')[-1]} {v:.4f}" for k, v in wl.items()),
-              flush=True)
-        if wandb is not None:
-            wandb.log(wl, step=step)
+        """Refresh finesplat_last.pt, evaluating the watchlist first when one is configured."""
+        wl = {}
+        if watchlists:
+            core.model.geometry_backbone.camera_mode = posed_camera_mode
+            wl_model = ema if ema is not None else core
+            wl_model.model.geometry_backbone.camera_mode = posed_camera_mode
+            wl = evaluate_watchlist(wl_model, watchlists, device, amp, out_dir, step,
+                                    save_renders=config.train.get("save_watchlist_renders", False))
+            print("  watchlist " + "  ".join(f"{k.split('/')[-1]} {v:.4f}" for k, v in wl.items()),
+                  flush=True)
+            if wandb is not None:
+                wandb.log(wl, step=step)
         # e2e checkpoints carry the unfrozen Stage 1 (full state dict); frozen runs store Stage 2 only
         state = core.state_dict() if core.e2e else stage2_state_dict(core)
         ckpt = {"step": step, "epoch": epoch_now[0], "batch_in_epoch": batch_in_epoch[0],
@@ -369,7 +404,7 @@ def main() -> None:
                                     config.train.get("lr_decay_ratio", 0.2))
 
             unposed = unposed_ratio > 0 and torch.rand(()).item() < unposed_ratio
-            core.model.geometry_expert.camera_mode = (
+            core.model.geometry_backbone.camera_mode = (
                 "pred_pose_pred_intr" if unposed else posed_camera_mode)
             with amp:
                 out = model(input_data, target_data)

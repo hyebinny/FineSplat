@@ -1,6 +1,6 @@
 """Per-scene Gaussian export in the reference gaussian-splatting .ply layout (x y z, zero
 normals, f_dc / channel-major f_rest, pre-sigmoid opacity, log scale, wxyz rotation).
-Gaussians are in 2Xplat's normalized camera frame; ``cameras.json`` stores those cameras.
+Gaussians are in the normalized scene frame; ``cameras.json`` stores those cameras.
 """
 
 import json
@@ -11,7 +11,8 @@ import torch
 
 from src.model.gaussians import GaussianField
 
-# 2Xplat stores opacity as a degree-0 SH coefficient; the .ply stores the logit C0 * coeff.
+# Opacity is view-independent: one coefficient per Gaussian, scaled by C0 at render time;
+# the .ply stores the logit C0 * coeff.
 SH_C0 = 0.28209479177387814
 
 PROPS_FIXED = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
@@ -60,7 +61,7 @@ def gaussians_to_ply(path, g: GaussianField, batch: int = 0) -> int:
     n = g.xyz.shape[1]
     op = g.opacity[batch].float().reshape(n, -1)
     if op.shape[1] != 1:
-        raise ValueError(f"opacity_degree > 0 has no reference-3DGS equivalent (D={op.shape[1]})")
+        raise ValueError(f"view-dependent opacity has no reference-3DGS equivalent (D={op.shape[1]})")
     write_ply(
         path,
         g.xyz[batch].float().cpu().numpy(),
@@ -103,7 +104,7 @@ def save_scene_cameras(path, cameras, input_index, target_index, image_size: int
             "fxfycxcy": intr[0].float().cpu().numpy().tolist(),
         }
     payload = {
-        "convention": "OpenCV camera-to-world, poses normalized to 2Xplat's scene scale; "
+        "convention": "OpenCV camera-to-world, poses normalized to the scene scale; "
                       "intrinsics in pixels at image_size",
         "image_size": image_size,
         "context": block(cameras.pred_i_c2w, cameras.pred_i_fxfycxcy, input_index),
